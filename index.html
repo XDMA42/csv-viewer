@@ -1,0 +1,3605 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CSV Lens</title>
+<meta name="description" content="递归分析一个根目录下的所有 CSV，支持插件：按 CSV 类型计算衍生特征、绘制专属子图。">
+<script>
+  // 尽早确定主题，避免闪烁
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem('csvlens.theme'); } catch (e) { /* storage blocked */ }
+    if (t !== 'light' && t !== 'dark') t = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style>
+:root {
+  color-scheme: light;
+  --font: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+  --bg: #f4f4f1;
+  --surface: #fcfcfb;
+  --surface-2: #f3f2ee;
+  --surface-3: #e9e8e2;
+  --border: rgba(11, 11, 11, 0.09);
+  --border-strong: rgba(11, 11, 11, 0.16);
+  --text: #0b0b0b;
+  --text-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --accent: #2a78d6;
+  --accent-ink: #1c5cab;
+  --accent-soft: rgba(42, 120, 214, 0.10);
+  --good: #0ca30c;
+  --warning: #fab219;
+  --critical: #d03b3b;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+  --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+  --div-neg: #2a78d6; --div-mid: #f0efec; --div-pos: #e34948;
+  --seq-lo: #cde2fb; --seq-hi: #104281;
+  --shadow: 0 1px 2px rgba(16, 16, 16, 0.04), 0 4px 14px rgba(16, 16, 16, 0.04);
+  --radius: 12px;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-2: #222220;
+  --surface-3: #2c2c2a;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --text: #f0efec;
+  --text-2: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --accent: #3987e5;
+  --accent-ink: #86b6ef;
+  --accent-soft: rgba(57, 135, 229, 0.16);
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  --div-neg: #3987e5; --div-mid: #383835; --div-pos: #e66767;
+  --seq-lo: #1c3350; --seq-hi: #86b6ef;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 14px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: var(--accent-ink); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.grow { flex: 1; min-width: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.mono { font-family: var(--mono); }
+[hidden] { display: none !important; }
+
+/* ---------- layout ---------- */
+.app {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-rows: 56px minmax(0, 1fr);
+  height: 100vh;
+}
+.topbar {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  z-index: 10;
+}
+.brand { display: flex; align-items: center; gap: 10px; flex: none; }
+.brand-mark {
+  width: 30px; height: 30px; border-radius: 8px; flex: none;
+  display: grid; place-items: center;
+  background: linear-gradient(135deg, #2a78d6, #6250d6);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+.brand-name { font-weight: 650; font-size: 15px; letter-spacing: 0.01em; line-height: 1.2; }
+.brand-sub { font-size: 11.5px; color: var(--muted); line-height: 1.2; }
+.topbar-root { flex: 1; min-width: 0; display: flex; align-items: center; }
+.root-pill {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  height: 28px; padding: 0 10px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--text-2); font-size: 12.5px; white-space: nowrap; overflow: hidden;
+}
+.root-pill b { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.topbar-actions { display: flex; align-items: center; gap: 8px; }
+
+.sidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.main { overflow: auto; min-width: 0; position: relative; }
+.page { max-width: 1480px; margin: 0 auto; padding: 24px 28px 72px; }
+
+/* ---------- controls ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 32px; padding: 0 12px; border-radius: 8px;
+  border: 1px solid transparent; background: var(--accent); color: #fff;
+  font-size: 13px; font-weight: 560; cursor: pointer; white-space: nowrap;
+  transition: background-color 0.15s, border-color 0.15s, filter 0.15s;
+}
+.btn:hover { filter: brightness(1.07); }
+.btn.ghost { background: var(--surface); color: var(--text); border-color: var(--border-strong); }
+.btn.ghost:hover { background: var(--surface-2); filter: none; }
+.btn.subtle { background: transparent; color: var(--text-2); }
+.btn.subtle:hover { background: var(--surface-2); color: var(--text); filter: none; }
+.btn.danger { background: transparent; color: var(--critical); border-color: color-mix(in srgb, var(--critical) 40%, transparent); }
+.btn.danger:hover { background: color-mix(in srgb, var(--critical) 8%, transparent); filter: none; }
+.btn.sm { height: 26px; padding: 0 9px; font-size: 12px; border-radius: 6px; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
+.btn .count {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--surface-3); color: var(--text-2);
+  font-size: 11px; display: inline-grid; place-items: center; font-variant-numeric: tabular-nums;
+}
+.icon-btn {
+  display: inline-grid; place-items: center; flex: none;
+  width: 32px; height: 32px; border-radius: 8px;
+  border: 1px solid transparent; background: transparent; color: var(--text-2);
+  cursor: pointer;
+}
+.icon-btn:hover { background: var(--surface-2); color: var(--text); }
+.icon-btn:disabled { opacity: 0.35; cursor: not-allowed; background: transparent; }
+.icon-btn.sm { width: 24px; height: 24px; border-radius: 6px; }
+.ico { display: inline-flex; line-height: 0; flex: none; }
+.input {
+  height: 30px; padding: 0 8px; border-radius: 7px;
+  border: 1px solid var(--border-strong); background: var(--surface);
+  font-size: 12.5px; color: var(--text); outline: none; min-width: 0;
+}
+.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+input.input[type="number"] { width: 88px; }
+select.input { padding-right: 4px; max-width: 240px; }
+.field { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); }
+.field input[type="checkbox"] { accent-color: var(--accent); margin: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 24px; padding: 0 9px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text-2); font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.chip:hover { background: var(--surface-2); color: var(--text); }
+.chip.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--text); }
+.chip .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.chip.static { cursor: default; }
+.chip.static:hover { background: var(--surface); color: var(--text-2); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--c, var(--muted)); }
+.tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 8px; border-radius: 6px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--text-2); font-size: 12px; white-space: nowrap;
+}
+.kbd { font-family: var(--mono); font-size: 11px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--border-strong); background: var(--surface-2); }
+.switch { position: relative; width: 34px; height: 20px; flex: none; }
+.switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 1; }
+.switch i { position: absolute; inset: 0; border-radius: 10px; background: var(--surface-3); transition: background-color 0.15s; }
+.switch i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform 0.15s; }
+.switch input:checked + i { background: var(--accent); }
+.switch input:checked + i::after { transform: translateX(14px); }
+.switch input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px; }
+.progress { height: 4px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+.progress > i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 4px; transition: width 0.2s; }
+.spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--surface-3); border-top-color: var(--accent); animation: spin 0.8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- sidebar ---------- */
+.sidebar-head { padding: 12px 12px 10px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--border); }
+.search {
+  display: flex; align-items: center; gap: 8px;
+  height: 34px; padding: 0 10px; border-radius: 8px;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--muted);
+}
+.search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.search input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; font-size: 13px; color: var(--text); }
+.scan { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-2); }
+.tree { flex: 1; overflow: auto; padding: 6px 6px 16px; }
+.tree-row {
+  position: relative;
+  display: flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 8px 0 calc(8px + var(--depth, 0) * 14px);
+  border-radius: 7px; cursor: pointer; user-select: none;
+  color: var(--text-2); font-size: 13px;
+}
+.tree-row:hover { background: var(--surface-2); color: var(--text); }
+.tree-row.active { background: var(--accent-soft); color: var(--text); }
+.tree-row.active::before { content: ''; position: absolute; left: 1px; top: 7px; bottom: 7px; width: 3px; border-radius: 3px; background: var(--accent); }
+.tree-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-row .meta { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; flex: none; }
+.tree-row.folder { color: var(--text); font-weight: 560; }
+.tree-row.folder .ico.f { color: var(--muted); }
+.tree-row .chev { color: var(--muted); transition: transform 0.15s; display: inline-flex; width: 16px; justify-content: center; }
+.tree-row.open .chev { transform: rotate(90deg); }
+.tree-row .ico.file { color: var(--muted); }
+.tree-row.error .name { color: var(--critical); }
+.tree-row .dots { display: inline-flex; gap: 3px; flex: none; }
+.tree-row .dots .dot { width: 7px; height: 7px; }
+.tree-row input[type="checkbox"] { margin: 0; width: 14px; height: 14px; accent-color: var(--accent); opacity: 0; flex: none; cursor: pointer; }
+.tree-row:hover input[type="checkbox"], .tree-row input[type="checkbox"]:checked, .tree.selecting .tree-row input[type="checkbox"] { opacity: 1; }
+.tree-empty { padding: 28px 16px; text-align: center; color: var(--muted); font-size: 13px; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+.sidebar-foot {
+  border-top: 1px solid var(--border); padding: 10px 12px;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; color: var(--text-2); background: var(--surface);
+}
+
+/* ---------- page parts ---------- */
+.page-head { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; font-size: 12.5px; color: var(--muted); margin-bottom: 4px; }
+.crumbs button { border: 0; background: none; padding: 0 3px; border-radius: 4px; color: var(--text-2); cursor: pointer; }
+.crumbs button:hover { color: var(--accent-ink); background: var(--surface-2); }
+h1.title { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.3; word-break: break-all; }
+.subtitle { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.meta-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.stack { display: flex; flex-direction: column; gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); min-width: 0; }
+.card-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.card-title { font-weight: 620; font-size: 14.5px; }
+.card-sub { color: var(--muted); font-size: 12.5px; }
+.card-body { padding: 16px 18px; }
+.card-body.flush { padding: 0; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.tile { padding: 12px 14px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); min-width: 0; }
+.tiles.on-card .tile { background: var(--surface-2); border-color: transparent; }
+.tile .label { font-size: 12px; color: var(--text-2); }
+.tile .value { font-size: 21px; font-weight: 620; margin-top: 2px; line-height: 1.25; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.tile .value .unit { font-size: 12.5px; font-weight: 500; color: var(--muted); margin-left: 3px; }
+.tile .hint { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.empty { padding: 40px 20px; text-align: center; color: var(--text-2); display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.empty .ico { color: var(--muted); }
+.empty h3 { margin: 0; font-size: 15px; color: var(--text); }
+.empty p { margin: 0; max-width: 520px; font-size: 13px; color: var(--muted); }
+.loading { display: flex; align-items: center; gap: 10px; padding: 28px 4px; color: var(--text-2); font-size: 13px; }
+.err {
+  border: 1px solid color-mix(in srgb, var(--critical) 38%, transparent);
+  background: color-mix(in srgb, var(--critical) 7%, transparent);
+  border-radius: 8px; padding: 10px 12px; font-size: 12.5px;
+  display: flex; gap: 8px; align-items: flex-start; color: var(--text);
+}
+.err .ico { color: var(--critical); margin-top: 2px; }
+.err pre { margin: 4px 0 0; font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; word-break: break-word; color: var(--text-2); }
+.hint-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: -4px 0 14px; }
+
+/* tabs */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 18px; overflow-x: auto; }
+.tab {
+  position: relative; display: inline-flex; align-items: center; gap: 6px;
+  height: 40px; padding: 0 14px; border: 0; background: transparent;
+  color: var(--text-2); font-size: 13.5px; font-weight: 560; cursor: pointer; white-space: nowrap;
+}
+.tab:hover { color: var(--text); }
+.tab.on { color: var(--text); }
+.tab.on::after { content: ''; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--accent); }
+.tab .badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--surface-3); color: var(--text-2); font-size: 11px; display: inline-grid; place-items: center; font-variant-numeric: tabular-nums; }
+
+/* charts */
+.chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px 8px; min-width: 0; }
+.chart-card.span-2 { grid-column: 1 / -1; }
+.chart-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; min-height: 22px; }
+.chart-title { font-weight: 600; font-size: 13.5px; }
+.chart-sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chart { width: 100%; position: relative; }
+.chart-msg { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; color: var(--muted); font-size: 12.5px; }
+.chart-msg.bad { color: var(--critical); }
+
+/* plugin sections */
+.psec { overflow: hidden; }
+.psec-head { display: flex; align-items: flex-start; gap: 12px; padding: 14px 18px; cursor: pointer; }
+.psec-head:hover .psec-name { color: var(--accent-ink); }
+.picon {
+  width: 32px; height: 32px; border-radius: 9px; flex: none;
+  display: grid; place-items: center;
+  background: color-mix(in srgb, var(--c) 14%, transparent); color: var(--c);
+}
+.psec-name { font-weight: 640; font-size: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.psec-name .ver { font-weight: 500; font-size: 11.5px; color: var(--muted); }
+.psec-desc { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+.psec-chev { color: var(--muted); transition: transform 0.15s; margin-top: 6px; }
+.psec:not(.collapsed) .psec-chev { transform: rotate(90deg); }
+.psec-body { padding: 2px 18px 18px; display: flex; flex-direction: column; gap: 14px; }
+.psec.collapsed .psec-body { display: none; }
+.params { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 12px; border-radius: 9px; background: var(--surface-2); }
+.params .ico { color: var(--muted); }
+.feat-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.feat {
+  display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 6px;
+  font-family: var(--mono); font-size: 11.5px; color: var(--text);
+  background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.feat em { font-style: normal; font-family: var(--font); color: var(--text-2); }
+
+/* tables */
+.tbl-wrap { overflow: auto; max-height: 560px; }
+table.grid-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
+.grid-table th {
+  position: sticky; top: 0; z-index: 1;
+  text-align: left; font-weight: 600; color: var(--text-2);
+  background: var(--surface); padding: 8px 12px; border-bottom: 1px solid var(--border-strong); white-space: nowrap;
+}
+.grid-table th.sortable { cursor: pointer; user-select: none; }
+.grid-table th.sortable:hover { color: var(--text); }
+.grid-table th.sorted { color: var(--text); }
+.grid-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.grid-table tr:last-child td { border-bottom: 0; }
+.grid-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.grid-table tr.clickable { cursor: pointer; }
+.grid-table tr.clickable:hover td { background: var(--surface-2); }
+.grid-table .nm { font-weight: 560; color: var(--text); word-break: break-all; }
+.grid-table .path { color: var(--muted); font-size: 12px; word-break: break-all; }
+.type-badge { display: inline-block; padding: 1px 7px; border-radius: 5px; font-size: 11px; font-weight: 560; background: var(--surface-3); color: var(--text-2); }
+.type-badge.number { background: color-mix(in srgb, var(--s1) 14%, transparent); color: var(--text); }
+.type-badge.datetime { background: color-mix(in srgb, var(--s7) 16%, transparent); color: var(--text); }
+.type-badge.derived { background: var(--accent-soft); color: var(--accent-ink); }
+.spark { color: var(--accent); display: inline-flex; }
+.top-vals { color: var(--text-2); font-size: 12px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* virtual data table */
+.vt-wrap { height: min(68vh, 640px); overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+table.vt { border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.vt th {
+  position: sticky; top: 0; z-index: 2;
+  height: 34px; padding: 0 10px; text-align: left; font-weight: 600;
+  background: var(--surface-2); border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.vt td { height: 28px; padding: 0 10px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vt .num { text-align: right; }
+.vt .idx { position: sticky; left: 0; z-index: 1; background: var(--surface); color: var(--muted); text-align: right; border-right: 1px solid var(--border); }
+.vt th.idx { z-index: 3; background: var(--surface-2); }
+.vt .dv { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.vt th.dv { background: color-mix(in srgb, var(--accent) 12%, var(--surface-2)); }
+.vt .na { color: var(--muted); }
+.vt tr.pad td { padding: 0; border: 0; height: auto; }
+.toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; font-size: 12.5px; color: var(--text-2); }
+
+/* builder */
+.builder { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); margin-bottom: 14px; }
+.builder-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.builder-label { font-size: 12px; color: var(--muted); min-width: 44px; }
+
+/* overview */
+.plist { display: flex; flex-direction: column; }
+.prow { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-top: 1px solid var(--border); }
+.prow:first-child { border-top: 0; }
+.prow .pname { font-weight: 600; }
+.prow .pdesc { font-size: 12.5px; color: var(--muted); }
+.prow .pcount { font-size: 12.5px; color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.schema { display: flex; gap: 14px; align-items: flex-start; padding: 12px 18px; border-top: 1px solid var(--border); cursor: pointer; }
+.schema:first-child { border-top: 0; }
+.schema:hover { background: var(--surface-2); }
+.schema .cnt { flex: none; min-width: 52px; font-size: 18px; font-weight: 620; font-variant-numeric: tabular-nums; }
+.schema .cnt small { display: block; font-size: 11px; font-weight: 500; color: var(--muted); margin-top: -2px; }
+.colchip { display: inline-block; font-family: var(--mono); font-size: 11.5px; padding: 1px 6px; margin: 2px 4px 2px 0; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-2); }
+.batch { border-top: 1px solid var(--border); }
+.batch-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 18px; font-size: 12.5px; color: var(--text-2); }
+.batch-body { padding: 0 18px 18px; display: flex; flex-direction: column; gap: 14px; }
+details.errors summary { cursor: pointer; font-size: 12.5px; color: var(--critical); }
+details.errors ul { margin: 6px 0 0; padding-left: 18px; font-size: 12px; color: var(--text-2); }
+
+/* welcome */
+.welcome { max-width: 1080px; padding-top: 44px; }
+.hero h1 { font-size: 30px; line-height: 1.25; margin: 0 0 10px; letter-spacing: -0.015em; font-weight: 680; }
+.hero p { margin: 0; color: var(--text-2); font-size: 15px; max-width: 680px; }
+.drop {
+  margin: 28px 0 24px; padding: 40px 24px; border-radius: 16px; text-align: center; cursor: pointer;
+  border: 1.5px dashed var(--border-strong); background: var(--surface);
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.drop:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 4%, var(--surface)); }
+.drop-icon { width: 56px; height: 56px; border-radius: 16px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
+.drop-title { font-size: 17px; font-weight: 620; }
+.drop-sub { color: var(--muted); font-size: 13px; max-width: 560px; }
+.drop-actions { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; justify-content: center; }
+.features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 24px; }
+.feature { padding: 16px 18px; }
+.feature .fi { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; background: var(--surface-2); color: var(--text-2); margin-bottom: 10px; }
+.feature h3 { margin: 0 0 4px; font-size: 14px; }
+.feature p { margin: 0; font-size: 12.5px; color: var(--text-2); }
+.two-col { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 12px; }
+pre.code {
+  margin: 0; padding: 14px 16px; overflow: auto;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.6;
+  background: var(--surface-2); border-radius: 0 0 var(--radius) var(--radius); color: var(--text);
+}
+pre.code.boxed { border-radius: 10px; border: 1px solid var(--border); max-height: 52vh; }
+.tk-c { color: var(--muted); font-style: italic; }
+.tk-s { color: #1b7f4f; }
+.tk-k { color: #7a3fd0; }
+.tk-n { color: #b4570c; }
+.tk-p { color: #1c5cab; }
+:root[data-theme="dark"] .tk-s { color: #7fd4a4; }
+:root[data-theme="dark"] .tk-k { color: #c3a6f7; }
+:root[data-theme="dark"] .tk-n { color: #f0a96b; }
+:root[data-theme="dark"] .tk-p { color: #86b6ef; }
+
+/* modal */
+.modal-overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: rgba(10, 10, 10, 0.42); backdrop-filter: blur(2px); }
+.modal { width: min(760px, 100%); max-height: calc(100vh - 48px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28); }
+.modal.wide { width: min(1080px, 100%); }
+.modal-head { display: flex; align-items: center; gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.modal-head h2 { margin: 0; font-size: 16px; flex: 1; }
+.modal-body { padding: 16px 20px; overflow: auto; }
+.modal-foot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border); }
+.modal .tabs { margin: -6px 0 16px; }
+.pm-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
+.pm-row { display: flex; gap: 12px; align-items: flex-start; padding: 14px 0; border-top: 1px solid var(--border); }
+.pm-row:first-of-type { border-top: 0; }
+.pm-name { font-weight: 620; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pm-desc { font-size: 12.5px; color: var(--text-2); margin-top: 2px; }
+.pm-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.pm-ctrl { display: flex; align-items: center; gap: 6px; flex: none; }
+textarea.code-editor {
+  width: 100%; height: min(58vh, 560px); resize: vertical;
+  padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border-strong);
+  background: var(--surface-2); color: var(--text); outline: none;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.6; tab-size: 2; white-space: pre;
+}
+textarea.code-editor:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.doc-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 8px 0 16px; }
+.doc-table td, .doc-table th { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.doc-table th { color: var(--text-2); font-weight: 600; }
+.doc-table code, .modal-body p code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+
+/* toasts & drop overlay */
+.toasts { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: flex; flex-direction: column; gap: 8px; max-width: min(420px, calc(100vw - 32px)); }
+.toast {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px 10px 10px 14px; border-radius: 10px;
+  background: var(--surface); border: 1px solid var(--border-strong); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+  font-size: 13px; animation: pop 0.18s ease-out;
+}
+.toast .ico { margin-top: 2px; color: var(--accent); }
+.toast.error .ico { color: var(--critical); }
+.toast.success .ico { color: var(--good); }
+.toast-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+@keyframes pop { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 70; display: none; place-items: center;
+  background: color-mix(in srgb, var(--accent) 12%, rgba(0, 0, 0, 0.35)); backdrop-filter: blur(3px);
+  pointer-events: none;
+}
+.drop-overlay.show { display: grid; }
+.drop-overlay > div {
+  padding: 28px 40px; border-radius: 16px; background: var(--surface); border: 2px dashed var(--accent);
+  font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 12px;
+}
+.drop-overlay .ico { color: var(--accent); }
+.only-mobile { display: none !important; }
+
+@media (max-width: 1100px) {
+  .chart-grid { grid-template-columns: minmax(0, 1fr); }
+  .two-col, .features { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 860px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .sidebar {
+    position: fixed; top: 56px; bottom: 0; left: 0; width: min(320px, 88vw); z-index: 30;
+    transform: translateX(-102%); transition: transform 0.2s; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+  }
+  .sidebar.open { transform: none; }
+  .only-mobile { display: inline-grid !important; }
+  .brand-sub, .topbar-root, .hide-sm { display: none !important; }
+  .topbar { gap: 8px; padding: 0 10px; }
+  .page { padding: 16px 16px 56px; }
+  .welcome { padding-top: 20px; }
+  .hero h1 { font-size: 24px; }
+}
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <button class="icon-btn only-mobile" id="btnSidebar" aria-label="文件列表"></button>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 18.5l5-6 3.5 3.5 5.5-8"/><circle cx="19" cy="6" r="1.4" fill="#fff" stroke="none"/></svg>
+      </span>
+      <div>
+        <div class="brand-name">CSV Lens</div>
+        <div class="brand-sub">目录级 CSV 分析 · 插件化</div>
+      </div>
+    </div>
+    <div class="topbar-root" id="rootLabel"></div>
+    <div class="topbar-actions">
+      <button class="btn" id="btnOpen"></button>
+      <button class="btn ghost" id="btnPlugins"></button>
+      <button class="icon-btn" id="btnTheme" aria-label="切换明暗主题" title="切换明暗主题"></button>
+    </div>
+  </header>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <label class="search" id="searchBox"><input id="search" type="search" placeholder="搜索文件名 / 路径 / 列名" autocomplete="off"></label>
+      <div class="chips" id="filterChips"></div>
+      <div class="scan" id="scanBox" hidden></div>
+    </div>
+    <div class="tree" id="tree"></div>
+    <div class="sidebar-foot" id="compareBar" hidden></div>
+  </aside>
+  <main class="main" id="main"></main>
+</div>
+<div class="drop-overlay" id="dropOverlay"><div id="dropOverlayInner">释放以加载文件夹 / CSV / 插件 (.js)</div></div>
+<div id="modalRoot"></div>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+<input type="file" id="dirInput" webkitdirectory directory multiple hidden>
+<input type="file" id="pluginInput" accept=".js,text/javascript" multiple hidden>
+
+<!-- ECharts：优先本地 vendor/，缺失时回退到 CDN -->
+<script src="vendor/echarts.min.js"></script>
+<script>window.echarts || document.write('<script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"><\/script>');</script>
+
+<script>
+(function () {
+'use strict';
+
+const VERSION = '1.0.0';
+const FONT = 'system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif';
+const DATA_EXT = /\.(csv|tsv)$/i;
+const PLUGIN_EXT = /\.plugin\.js$/i;
+const SKIP_DIRS = new Set(['.git', '.svn', '.hg', 'node_modules', '__pycache__', '.idea', '.vscode']);
+const TIME_NAME = /(^t$|^ts$|^ts_|_ts$|time|stamp|date|epoch|时间|日期|时刻)/i;
+const LINEISH = new Set(['line', 'area', 'step']);
+const HEADER_CHUNK = 64 * 1024;
+const MAX_COMPARE = 8;
+const MAX_TABLE_ROWS = 500000;
+
+const $ = (sel, root) => (root || document).querySelector(sel);
+
+/* =====================================================================
+ * 存储（localStorage 不可用时退回内存）
+ * ===================================================================== */
+const memStore = {};
+const store = {
+  get(k, d) {
+    try { const v = localStorage.getItem('csvlens.' + k); if (v != null) return JSON.parse(v); } catch (e) { /* blocked */ }
+    return k in memStore ? memStore[k] : d;
+  },
+  set(k, v) {
+    memStore[k] = v;
+    try { localStorage.setItem('csvlens.' + k, JSON.stringify(v)); } catch (e) { /* blocked */ }
+  },
+};
+
+/* =====================================================================
+ * DOM 小工具：字符串一律作为文本节点插入（CSV 内容不会被当作 HTML）
+ * ===================================================================== */
+function h(tag, props, ...children) {
+  const el = document.createElement(tag);
+  let value;
+  if (props) {
+    for (const k in props) {
+      const v = props[k];
+      if (v == null || v === false) continue;
+      if (k === 'class') el.className = v;
+      else if (k === 'style') {
+        if (typeof v === 'string') el.style.cssText = v;
+        else for (const s in v) { if (s.startsWith('--')) el.style.setProperty(s, v[s]); else el.style[s] = v[s]; }
+      }
+      else if (k === 'html') el.innerHTML = v;
+      else if (k === 'value') value = v;
+      else if (k === 'dataset') Object.assign(el.dataset, v);
+      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
+      else if (k === 'checked' || k === 'disabled' || k === 'hidden' || k === 'multiple' || k === 'selected') el[k] = !!v;
+      else el.setAttribute(k, v === true ? '' : String(v));
+    }
+  }
+  append(el, children);
+  if (value !== undefined) el.value = value;
+  return el;
+}
+function append(el, children) {
+  for (const c of children) {
+    if (c == null || c === false || c === true) continue;
+    if (Array.isArray(c)) append(el, c);
+    else el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return el;
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+const ICONS = {
+  folder: '<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.3l2 2h8.7A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>',
+  chart: '<path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 6-7"/>',
+  plug: '<path d="M12 22v-4"/><path d="M9 7V2M15 7V2"/><path d="M18 7v4a6 6 0 0 1-12 0V7z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon: '<path d="M20.5 13.2A8.5 8.5 0 1 1 10.8 3.5a6.6 6.6 0 0 0 9.7 9.7z"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
+  x: '<path d="M18 6L6 18M6 6l12 12"/>',
+  chevron: '<path d="M9 6l6 6-6 6"/>',
+  left: '<path d="M15 6l-6 6 6 6"/>',
+  upload: '<path d="M12 15V3M7 8l5-5 5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>',
+  download: '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/>',
+  layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>',
+  compare: '<path d="M3 17l5-6 4 3 5-7 4 3"/><path d="M3 21h18"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  alert: '<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.5v.01"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  sparkles: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/>',
+  table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/>',
+  code: '<path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/>',
+  menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+  sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+  grid: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>',
+};
+function icon(name, size, cls) {
+  const s = document.createElement('span');
+  s.className = 'ico' + (cls ? ' ' + cls : '');
+  const z = size || 16;
+  s.innerHTML = '<svg width="' + z + '" height="' + z + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[name] || '') + '</svg>';
+  return s;
+}
+
+/* =====================================================================
+ * 格式化
+ * ===================================================================== */
+function fmtNum(v, digits) {
+  if (v == null || v === '') return '—';
+  if (typeof v !== 'number') return String(v);
+  if (Number.isNaN(v)) return '—';
+  if (!Number.isFinite(v)) return v > 0 ? '∞' : '−∞';
+  if (digits != null) return v.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  const a = Math.abs(v);
+  // 时间戳一类的大整数不加千分位
+  if (Number.isInteger(v)) return a < 1e9 ? v.toLocaleString('en-US') : (a < 1e16 ? String(v) : v.toExponential(3));
+  if (a >= 1e9 || a < 1e-4) return v.toExponential(3);
+  if (a >= 1e4) return v.toLocaleString('en-US', { maximumFractionDigits: 1 });
+  return String(+v.toPrecision(5));
+}
+function fmtAxis(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return '';
+  const a = Math.abs(v);
+  if (a >= 1e12) return +(v / 1e12).toPrecision(4) + 'T';
+  if (a >= 1e9) return +(v / 1e9).toPrecision(4) + 'B';
+  if (a >= 1e6) return +(v / 1e6).toPrecision(4) + 'M';
+  if (a >= 1e4) return +(v / 1e3).toPrecision(4) + 'K';
+  return String(+v.toPrecision(4));
+}
+function fmtBytes(b) {
+  if (!Number.isFinite(b)) return '—';
+  if (b < 1024) return b + ' B';
+  const u = ['KB', 'MB', 'GB', 'TB'];
+  let i = -1;
+  do { b /= 1024; i++; } while (b >= 1024 && i < u.length - 1);
+  return (b >= 100 ? b.toFixed(0) : b >= 10 ? b.toFixed(1) : b.toFixed(2)) + ' ' + u[i];
+}
+function fmtDuration(ms) {
+  if (ms == null || !Number.isFinite(ms)) return '—';
+  const s = Math.abs(ms) / 1000;
+  if (s < 1) return Math.round(Math.abs(ms)) + ' 毫秒';
+  if (s < 60) return (s < 10 ? s.toFixed(2) : s.toFixed(1)) + ' 秒';
+  if (s < 3600) { const t = Math.round(s); return Math.floor(t / 60) + ' 分 ' + (t % 60) + ' 秒'; }
+  if (s < 86400) { const t = Math.round(s / 60); return Math.floor(t / 60) + ' 时 ' + (t % 60) + ' 分'; }
+  const t = Math.round(s / 3600);
+  return Math.floor(t / 24) + ' 天 ' + (t % 24) + ' 时';
+}
+function fmtDate(ms, withMs) {
+  if (!Number.isFinite(ms)) return '—';
+  const d = new Date(ms);
+  const p = (n, w) => String(n).padStart(w || 2, '0');
+  let s = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  if (withMs !== false && d.getMilliseconds()) s += '.' + p(d.getMilliseconds(), 3);
+  return s;
+}
+function fmtCell(v) {
+  if (v == null) return '—';
+  if (typeof v === 'number') return fmtNum(v);
+  return String(v);
+}
+const DELIM_NAMES = { ',': '逗号', '\t': '制表符', ';': '分号', '|': '竖线' };
+
+function highlight(code) {
+  const re = /(\/\*[\s\S]*?\*\/|\/\/[^\n]*)|('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`)|\b(const|let|var|function|return|new|true|false|null|undefined|if|else|for|of|in|this)\b|\b(\d+(?:\.\d+)?)\b|([A-Za-z_$][\w$]*)(?=\s*:(?!:))/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(code))) {
+    out += esc(code.slice(last, m.index));
+    const cls = m[1] ? 'c' : m[2] ? 's' : m[3] ? 'k' : m[4] ? 'n' : 'p';
+    out += '<span class="tk-' + cls + '">' + esc(m[0]) + '</span>';
+    last = re.lastIndex;
+  }
+  return out + esc(code.slice(last));
+}
+
+/* =====================================================================
+ * CSV 解析核心 —— 这些函数会被序列化进 Web Worker，必须保持自包含
+ * ===================================================================== */
+function csvDecode(buf, partial) {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  try {
+    return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes, { stream: !!partial }), encoding: 'UTF-8' };
+  } catch (e) {
+    try { return { text: new TextDecoder('gb18030').decode(bytes, { stream: !!partial }), encoding: 'GB18030' }; }
+    catch (e2) { return { text: new TextDecoder('utf-8').decode(bytes), encoding: 'UTF-8' }; }
+  }
+}
+
+function csvDetectDelimiter(text) {
+  const lines = [];
+  let pos = 0;
+  while (lines.length < 12 && pos < text.length) {
+    let nl = text.indexOf('\n', pos);
+    if (nl === -1) nl = text.length;
+    const line = text.slice(pos, nl).replace(/\r$/, '');
+    if (line.trim()) lines.push(line);
+    pos = nl + 1;
+  }
+  if (!lines.length) return ',';
+  let best = ',', bestScore = -1;
+  for (const d of [',', '\t', ';', '|']) {
+    const counts = lines.map((l) => {
+      let c = 0, q = false;
+      for (let i = 0; i < l.length; i++) {
+        const ch = l[i];
+        if (ch === '"') q = !q;
+        else if (ch === d && !q) c++;
+      }
+      return c;
+    });
+    if (!counts[0]) continue;
+    const same = counts.filter((c) => c === counts[0]).length / counts.length;
+    const score = counts[0] * same * same;
+    if (score > bestScore) { bestScore = score; best = d; }
+  }
+  return best;
+}
+
+/** 逐行解析，支持引号、转义引号、引号内换行、CRLF。返回停止时的字符位置。 */
+function csvParseRows(text, delim, maxRows, onRow) {
+  const D = delim.charCodeAt(0), Q = 34, CR = 13, LF = 10;
+  const n = text.length;
+  let i = text.charCodeAt(0) === 0xfeff ? 1 : 0;
+  let row = [], rows = 0;
+  while (i < n) {
+    let c = text.charCodeAt(i), field;
+    if (c === Q) {
+      let j = i + 1, s = '';
+      for (;;) {
+        const k = text.indexOf('"', j);
+        if (k === -1) { s += text.slice(j); i = n; break; }
+        s += text.slice(j, k);
+        if (text.charCodeAt(k + 1) === Q) { s += '"'; j = k + 2; }
+        else { i = k + 1; break; }
+      }
+      while (i < n) {
+        c = text.charCodeAt(i);
+        if (c === D || c === LF || c === CR) break;
+        s += text[i]; i++;
+      }
+      field = s;
+    } else {
+      let j = i;
+      while (j < n) {
+        c = text.charCodeAt(j);
+        if (c === D || c === LF || c === CR) break;
+        j++;
+      }
+      field = text.slice(i, j);
+      i = j;
+    }
+    row.push(field);
+    if (i >= n) { onRow(row); rows++; break; }
+    c = text.charCodeAt(i);
+    if (c === D) {
+      i++;
+      if (i >= n) { row.push(''); onRow(row); rows++; }
+      continue;
+    }
+    if (c === CR && text.charCodeAt(i + 1) === LF) i += 2; else i++;
+    onRow(row); rows++;
+    row = [];
+    if (maxRows && rows >= maxRows) return i;
+  }
+  return n;
+}
+
+function csvParseDate(s) {
+  const m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(?:[.,](\d{1,9}))?)?)?\s*(Z|[+-]\d{2}(?::?\d{2})?)?$/i.exec(s);
+  if (m) {
+    const mo = +m[2], d = +m[3], hh = +(m[4] || 0), mi = +(m[5] || 0), ss = +(m[6] || 0);
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || hh > 23 || mi > 59 || ss > 60) return NaN;
+    const ms = m[7] ? Math.round(Number('0.' + m[7]) * 1000) : 0;
+    if (m[8]) {
+      let off = 0;
+      if (m[8].toUpperCase() !== 'Z') {
+        const z = m[8].replace(':', '');
+        off = (z[0] === '-' ? -1 : 1) * (+z.slice(1, 3) * 60 + (z.length >= 5 ? +z.slice(3, 5) : 0));
+      }
+      return Date.UTC(+m[1], mo - 1, d, hh, mi, ss, ms) - off * 60000;
+    }
+    return new Date(+m[1], mo - 1, d, hh, mi, ss, ms).getTime();
+  }
+  const t = /^(\d{1,2}):(\d{2})(?::(\d{2})(?:[.,](\d{1,9}))?)?$/.exec(s);
+  if (t && +t[1] < 24 && +t[2] < 60) {
+    return new Date(1970, 0, 1, +t[1], +t[2], +(t[3] || 0), t[4] ? Math.round(Number('0.' + t[4]) * 1000) : 0).getTime();
+  }
+  return NaN;
+}
+
+/** 推断列类型：number（≥95% 可解析为数字）、datetime、string、empty */
+function csvInferColumn(name, raw) {
+  const MISSING = { '': 1, na: 1, 'n/a': 1, nan: 1, null: 1, none: 1, nil: 1, '-': 1, '--': 1, '#n/a': 1, undefined: 1, '?': 1 };
+  const n = raw.length;
+  const num = new Float64Array(n);
+  let nonMissing = 0, numeric = 0;
+  for (let i = 0; i < n; i++) {
+    const s = raw[i];
+    if (s.length === 0) { num[i] = NaN; continue; }
+    const v = +s;
+    if (v === v) {
+      if (v === 0 && !s.trim()) { num[i] = NaN; continue; }
+      num[i] = v; numeric++; nonMissing++;
+    } else {
+      num[i] = NaN;
+      if (!MISSING[s.trim().toLowerCase()]) nonMissing++;
+    }
+  }
+  if (nonMissing === 0) return { name, type: 'empty', values: num, missing: n, invalid: 0 };
+  if (numeric / nonMissing >= 0.95) return { name, type: 'number', values: num, missing: n - nonMissing, invalid: nonMissing - numeric };
+  let tried = 0, ok = 0;
+  for (let i = 0; i < n && tried < 200; i++) {
+    const s = raw[i].trim();
+    if (!s || MISSING[s.toLowerCase()]) continue;
+    tried++;
+    if (csvParseDate(s) === csvParseDate(s)) ok++;
+  }
+  if (tried && ok / tried >= 0.9) {
+    let miss = 0, inv = 0;
+    for (let i = 0; i < n; i++) {
+      const s = raw[i].trim();
+      if (!s || MISSING[s.toLowerCase()]) { num[i] = NaN; miss++; continue; }
+      const t = csvParseDate(s);
+      num[i] = t;
+      if (t !== t) inv++;
+    }
+    return { name, type: 'datetime', values: num, raw, missing: miss, invalid: inv };
+  }
+  let miss = 0;
+  for (let i = 0; i < n; i++) { const s = raw[i]; if (!s || MISSING[s.trim().toLowerCase()]) miss++; }
+  return { name, type: 'string', values: raw, missing: miss, invalid: 0 };
+}
+
+function csvBuildTable(text, opts) {
+  opts = opts || {};
+  const delimiter = opts.delimiter || csvDetectDelimiter(text);
+  let header = null, rows = 0;
+  const cols = [];
+  const pos = csvParseRows(text, delimiter, opts.maxRows || 0, function (row) {
+    if (row.length === 1 && row[0].trim() === '') return;
+    if (header === null) { header = row.slice(); for (let k = 0; k < row.length; k++) cols.push([]); return; }
+    if (row.length > cols.length) {
+      for (let k = cols.length; k < row.length; k++) { header.push(''); cols.push(new Array(rows).fill('')); }
+    }
+    for (let k = 0; k < cols.length; k++) cols[k].push(k < row.length ? row[k] : '');
+    rows++;
+  });
+  const complete = pos >= text.length && !opts.dropLast;
+  if (opts.dropLast && rows > 1) { for (const c of cols) c.pop(); rows--; }
+  if (header === null) header = [];
+  const headerless = header.length > 0 && header.every((s) => s.trim() !== '' && Number.isFinite(+s));
+  if (headerless) {
+    for (let k = 0; k < cols.length; k++) cols[k].unshift(header[k]);
+    rows++;
+    header = header.map(() => '');
+  }
+  const seen = {};
+  const names = header.map((s, k) => {
+    let nm = String(s).replace(/^﻿/, '').trim() || 'col' + (k + 1);
+    if (seen[nm.toLowerCase()]) {
+      let j = 2;
+      while (seen[(nm + '_' + j).toLowerCase()]) j++;
+      nm = nm + '_' + j;
+    }
+    seen[nm.toLowerCase()] = 1;
+    return nm;
+  });
+  const columns = names.map((nm, k) => csvInferColumn(nm, cols[k]));
+  return { delimiter, rowCount: rows, columns, headerless, consumed: pos, complete };
+}
+
+const WORKER_SRC = [csvDecode, csvDetectDelimiter, csvParseRows, csvParseDate, csvInferColumn, csvBuildTable].map(String).join('\n') + `
+self.onmessage = async function (e) {
+  const { id, file, opts } = e.data;
+  try {
+    const t0 = performance.now();
+    const dec = csvDecode(await file.arrayBuffer(), false);
+    const res = csvBuildTable(dec.text, opts);
+    res.encoding = dec.encoding;
+    res.parseMs = performance.now() - t0;
+    const transfer = [];
+    for (const c of res.columns) if (c.values instanceof Float64Array) transfer.push(c.values.buffer);
+    self.postMessage({ id, ok: true, result: res }, transfer);
+  } catch (err) {
+    self.postMessage({ id, ok: false, error: String((err && err.message) || err) });
+  }
+};`;
+
+/** 解析器：优先使用 2 个 Web Worker，失败时退回主线程 */
+const Parser = {
+  workers: [], next: 0, seq: 0, pending: new Map(), broken: false,
+  init() {
+    if (this.workers.length || this.broken) return;
+    try {
+      const url = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
+      for (let i = 0; i < 2; i++) {
+        const w = new Worker(url);
+        w.onmessage = (e) => this.done(e.data);
+        w.onerror = (e) => { e.preventDefault(); this.fail(); };
+        this.workers.push(w);
+      }
+    } catch (e) {
+      this.broken = true;
+    }
+  },
+  parse(file, opts) {
+    this.init();
+    if (this.broken) return this.parseMain(file, opts);
+    const id = ++this.seq;
+    const w = this.workers[this.next++ % this.workers.length];
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject, file, opts });
+      w.postMessage({ id, file, opts });
+    });
+  },
+  done(msg) {
+    const p = this.pending.get(msg.id);
+    if (!p) return;
+    this.pending.delete(msg.id);
+    if (msg.ok) p.resolve(msg.result); else p.reject(new Error(msg.error));
+  },
+  fail() {
+    // Worker 无法运行（例如被浏览器策略阻止）：改为主线程解析
+    this.broken = true;
+    for (const w of this.workers) w.terminate();
+    this.workers = [];
+    const list = [...this.pending.values()];
+    this.pending.clear();
+    for (const p of list) this.parseMain(p.file, p.opts).then(p.resolve, p.reject);
+  },
+  async parseMain(file, opts) {
+    const t0 = performance.now();
+    const dec = csvDecode(await file.arrayBuffer(), false);
+    const res = csvBuildTable(dec.text, opts);
+    res.encoding = dec.encoding;
+    res.parseMs = performance.now() - t0;
+    return res;
+  },
+};
+
+/* =====================================================================
+ * 数据表：插件拿到的 t 就是它
+ * ===================================================================== */
+class DataTable {
+  constructor(parsed, meta) {
+    meta = meta || {};
+    this.name = meta.name || '';
+    this.path = meta.path || '';
+    this.file = { name: this.name, path: this.path, size: meta.size || 0 };
+    this.rowCount = parsed.rowCount;
+    this.delimiter = parsed.delimiter;
+    this.encoding = parsed.encoding;
+    this.parseMs = parsed.parseMs;
+    this._cols = [];
+    this._exact = new Map();
+    this._lower = new Map();
+    this._stats = new Map();
+    for (const c of parsed.columns) this._push(Object.assign({ derived: false, source: null }, c));
+  }
+  static fromRows(rows, meta) {
+    const keys = [];
+    const seen = new Set();
+    for (const r of rows) for (const k in r) if (!k.startsWith('__') && !seen.has(k)) { seen.add(k); keys.push(k); }
+    const columns = keys.map((k) => {
+      const vals = rows.map((r) => r[k]);
+      const numeric = vals.every((v) => v == null || typeof v === 'number' || typeof v === 'boolean');
+      if (numeric) {
+        const f = new Float64Array(vals.length);
+        vals.forEach((v, i) => { f[i] = v == null ? NaN : +v; });
+        return { name: k, type: 'number', values: f, missing: vals.filter((v) => v == null || Number.isNaN(+v)).length };
+      }
+      return { name: k, type: 'string', values: vals.map((v) => (v == null ? '' : String(v))), missing: vals.filter((v) => v == null || v === '').length };
+    });
+    return new DataTable({ rowCount: rows.length, columns }, meta);
+  }
+  _push(c) {
+    this._cols.push(c);
+    this._exact.set(c.name, c);
+    const lk = c.name.trim().toLowerCase();
+    if (!this._lower.has(lk)) this._lower.set(lk, c);
+  }
+  _reindex() {
+    this._exact = new Map();
+    this._lower = new Map();
+    const cols = this._cols;
+    this._cols = [];
+    for (const c of cols) this._push(c);
+  }
+  get columns() { return this._cols.map((c) => c.name); }
+  get numericColumns() { return this._cols.filter((c) => c.type === 'number').map((c) => c.name); }
+  getColumn(name) {
+    if (name == null) return null;
+    if (Array.isArray(name)) {
+      for (const n of name) { const c = this.getColumn(n); if (c) return c; }
+      return null;
+    }
+    return this._exact.get(name) || this._lower.get(String(name).trim().toLowerCase()) || null;
+  }
+  col(name) { const c = this.getColumn(name); return c ? c.values : undefined; }
+  find(name) { const c = this.getColumn(name); return c ? c.name : null; }
+  has(...names) { return names.every((n) => !!this.getColumn(n)); }
+  type(name) { const c = this.getColumn(name); return c ? c.type : null; }
+  isNumeric(name) { return this.type(name) === 'number'; }
+  addColumn(name, values, meta) {
+    meta = meta || {};
+    name = String(name);
+    if (!values || values.length !== this.rowCount) {
+      throw new Error('特征 "' + name + '" 的长度为 ' + (values ? values.length : 0) + '，应与行数 ' + this.rowCount + ' 相同');
+    }
+    let type = meta.type;
+    if (!type) {
+      if (ArrayBuffer.isView(values)) type = 'number';
+      else {
+        type = 'number';
+        for (let i = 0; i < values.length; i++) {
+          const v = values[i];
+          if (v != null && typeof v !== 'number' && typeof v !== 'boolean') { type = 'string'; break; }
+        }
+      }
+    }
+    let vals;
+    if (type === 'number' || type === 'datetime') {
+      vals = values instanceof Float64Array ? values : Float64Array.from(values, (v) => (v == null ? NaN : +v));
+    } else vals = Array.from(values, (v) => (v == null ? '' : String(v)));
+    const existing = this.getColumn(name);
+    if (existing && !existing.derived) throw new Error('特征名 "' + name + '" 与原始列 "' + existing.name + '" 冲突');
+    if (existing) { this._cols.splice(this._cols.indexOf(existing), 1); this._reindex(); }
+    let missing = 0;
+    for (let i = 0; i < vals.length; i++) { const v = vals[i]; if (v === '' || (typeof v === 'number' && !Number.isFinite(v))) missing++; }
+    const col = { name, type, values: vals, derived: true, source: meta.source || null, label: meta.label || '', unit: meta.unit || '', description: meta.description || '', missing, invalid: 0 };
+    this._push(col);
+    this._stats.delete(name);
+    return col;
+  }
+  removeDerived(source) {
+    const keep = this._cols.filter((c) => !c.derived || (source !== undefined && c.source !== source));
+    if (keep.length === this._cols.length) return;
+    for (const c of this._cols) if (!keep.includes(c)) this._stats.delete(c.name);
+    this._cols = keep;
+    this._reindex();
+  }
+  map(names, fn) {
+    names = Array.isArray(names) ? names : [names];
+    const cols = names.map((nm) => {
+      const v = this.col(nm);
+      if (!v) throw new Error('列不存在: ' + nm);
+      return v;
+    });
+    const n = this.rowCount, k = cols.length, out = new Float64Array(n), args = new Array(k + 1);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < k; j++) args[j] = cols[j][i];
+      args[k] = i;
+      const v = fn.apply(null, args);
+      out[i] = v == null ? NaN : v;
+    }
+    return out;
+  }
+  row(i) {
+    const o = {};
+    for (const c of this._cols) o[c.name] = c.values[i];
+    return o;
+  }
+  stats(name) {
+    const c = this.getColumn(name);
+    if (!c) return null;
+    if (this._stats.has(c.name)) return this._stats.get(c.name);
+    let s;
+    const v = c.values;
+    if (c.type === 'string' || c.type === 'empty' && !(v instanceof Float64Array)) {
+      const m = new Map();
+      let miss = 0;
+      for (let i = 0; i < v.length; i++) {
+        const x = v[i];
+        if (x === '' || x == null) { miss++; continue; }
+        if (m.size < 50000 || m.has(x)) m.set(x, (m.get(x) || 0) + 1);
+      }
+      const top = [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+      s = { kind: 'string', count: v.length - miss, missing: miss, distinct: m.size, capped: m.size >= 50000, top };
+    } else {
+      let n = 0, mean = 0, m2 = 0, mn = Infinity, mx = -Infinity;
+      for (let i = 0; i < v.length; i++) {
+        const x = v[i];
+        if (!Number.isFinite(x)) continue;
+        n++;
+        const d = x - mean;
+        mean += d / n;
+        m2 += d * (x - mean);
+        if (x < mn) mn = x;
+        if (x > mx) mx = x;
+      }
+      const bins = 24, hist = new Array(bins).fill(0);
+      if (n && mx > mn) {
+        const w = (mx - mn) / bins;
+        for (let i = 0; i < v.length; i++) { const x = v[i]; if (Number.isFinite(x)) hist[Math.min(bins - 1, Math.floor((x - mn) / w))]++; }
+      } else if (n) hist[Math.floor(bins / 2)] = n;
+      s = { kind: c.type, count: n, missing: v.length - n, min: n ? mn : NaN, max: n ? mx : NaN, mean: n ? mean : NaN, std: n > 1 ? Math.sqrt(m2 / (n - 1)) : NaN, hist };
+    }
+    this._stats.set(c.name, s);
+    return s;
+  }
+  /** 单元格文本。display=true 时去掉衍生特征的浮点噪声（导出时保留完整精度） */
+  cellText(c, i, display) {
+    const v = c.values[i];
+    if (c.type === 'string') return v;
+    if (c.type === 'datetime') return c.raw ? c.raw[i] : (Number.isFinite(v) ? fmtDate(v) : '');
+    if (!Number.isFinite(v)) return '';
+    if (display && c.derived && !Number.isInteger(v)) return String(Math.abs(v) >= 1e5 ? +v.toFixed(3) : +v.toPrecision(6));
+    return String(v);
+  }
+  toCSV() {
+    const q = (s) => (/[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s);
+    const cols = this._cols;
+    const lines = [cols.map((c) => q(c.name)).join(',')];
+    for (let i = 0; i < this.rowCount; i++) lines.push(cols.map((c) => q(this.cellText(c, i))).join(','));
+    return lines.join('\r\n');
+  }
+}
+
+/* =====================================================================
+ * 工具函数（插件中通过 ctx.utils / CSVViewer.utils 使用）
+ * ===================================================================== */
+const EPOCH_RANGES = [
+  [1e-6, 9.46e17, 4.2e18], // 纳秒
+  [1e-3, 9.46e14, 4.2e15], // 微秒
+  [1, 9.46e11, 4.2e12],    // 毫秒
+  [1000, 9.46e8, 4.2e9],   // 秒
+];
+/** 若数值看起来是 2000–2100 年间的 Unix 时间戳，返回换算到毫秒的倍数，否则 null */
+function epochScale(values) {
+  if (!values || !values.length) return null;
+  let lo = Infinity, hi = -Infinity, n = 0;
+  const step = Math.max(1, Math.floor(values.length / 4000));
+  for (let i = 0; i < values.length; i += step) {
+    const v = values[i];
+    if (typeof v === 'number' && Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; n++; }
+  }
+  const last = values[values.length - 1];
+  if (typeof last === 'number' && Number.isFinite(last)) { if (last < lo) lo = last; if (last > hi) hi = last; }
+  if (!n) return null;
+  for (const [scale, a, b] of EPOCH_RANGES) if (lo >= a && hi <= b) return scale;
+  return null;
+}
+function isNum(v) { return typeof v === 'number' && Number.isFinite(v); }
+
+const U = {
+  fmt: fmtNum, fmtBytes, fmtDuration, fmtDate,
+  isNum,
+  finite(a) { const o = []; for (let i = 0; i < a.length; i++) if (isNum(a[i])) o.push(a[i]); return o; },
+  count(a) { let n = 0; if (a) for (let i = 0; i < a.length; i++) if (isNum(a[i])) n++; return n; },
+  sum(a) { let s = 0; if (a) for (let i = 0; i < a.length; i++) if (isNum(a[i])) s += a[i]; return s; },
+  mean(a) { let s = 0, n = 0; if (a) for (let i = 0; i < a.length; i++) if (isNum(a[i])) { s += a[i]; n++; } return n ? s / n : NaN; },
+  variance(a) {
+    let n = 0, m = 0, m2 = 0;
+    if (a) for (let i = 0; i < a.length; i++) { const x = a[i]; if (!isNum(x)) continue; n++; const d = x - m; m += d / n; m2 += d * (x - m); }
+    return n > 1 ? m2 / (n - 1) : NaN;
+  },
+  std(a) { return Math.sqrt(U.variance(a)); },
+  min(a) { let m = Infinity; if (a) for (let i = 0; i < a.length; i++) if (isNum(a[i]) && a[i] < m) m = a[i]; return m === Infinity ? NaN : m; },
+  max(a) { let m = -Infinity; if (a) for (let i = 0; i < a.length; i++) if (isNum(a[i]) && a[i] > m) m = a[i]; return m === -Infinity ? NaN : m; },
+  extent(a) { return [U.min(a), U.max(a)]; },
+  rms(a) { let s = 0, n = 0; if (a) for (let i = 0; i < a.length; i++) if (isNum(a[i])) { s += a[i] * a[i]; n++; } return n ? Math.sqrt(s / n) : NaN; },
+  quantile(a, q) {
+    const f = Float64Array.from(U.finite(a || [])).sort();
+    if (!f.length) return NaN;
+    const pos = (f.length - 1) * Math.min(1, Math.max(0, q)), lo = Math.floor(pos), hi = Math.ceil(pos);
+    return f[lo] + (f[hi] - f[lo]) * (pos - lo);
+  },
+  median(a) { return U.quantile(a, 0.5); },
+  diff(a) { const o = new Float64Array(a.length); if (a.length) o[0] = NaN; for (let i = 1; i < a.length; i++) o[i] = a[i] - a[i - 1]; return o; },
+  cumsum(a) { const o = new Float64Array(a.length); let s = 0; for (let i = 0; i < a.length; i++) { if (isNum(a[i])) s += a[i]; o[i] = s; } return o; },
+  /** 滑动平均（忽略 NaN）。center=true 时窗口居中 */
+  movingAverage(a, w, center) {
+    w = Math.max(1, Math.round(w || 5));
+    const n = a.length, ps = new Float64Array(n + 1), pc = new Float64Array(n + 1), o = new Float64Array(n);
+    for (let i = 0; i < n; i++) { const ok = isNum(a[i]); ps[i + 1] = ps[i] + (ok ? a[i] : 0); pc[i + 1] = pc[i] + (ok ? 1 : 0); }
+    const back = center ? Math.floor((w - 1) / 2) : w - 1, fwd = center ? w - 1 - back : 0;
+    for (let i = 0; i < n; i++) {
+      const lo = Math.max(0, i - back), hi = Math.min(n, i + fwd + 1), c = pc[hi] - pc[lo];
+      o[i] = c ? (ps[hi] - ps[lo]) / c : NaN;
+    }
+    return o;
+  },
+  ema(a, alpha) {
+    alpha = alpha == null ? 0.2 : alpha;
+    const o = new Float64Array(a.length);
+    let prev = NaN;
+    for (let i = 0; i < a.length; i++) { const v = a[i]; if (isNum(v)) prev = prev === prev ? alpha * v + (1 - alpha) * prev : v; o[i] = prev; }
+    return o;
+  },
+  zscore(a) { const m = U.mean(a), s = U.std(a); return Float64Array.from(a, (v) => (isNum(v) && s ? (v - m) / s : NaN)); },
+  histogram(a, bins, range) {
+    bins = bins || 30;
+    let [lo, hi] = range || U.extent(a);
+    if (!Number.isFinite(lo)) return { edges: [], counts: [], centers: [] };
+    if (hi === lo) { lo -= 0.5; hi += 0.5; }
+    const w = (hi - lo) / bins, counts = new Array(bins).fill(0);
+    for (let i = 0; i < a.length; i++) { const v = a[i]; if (isNum(v) && v >= lo && v <= hi) counts[Math.min(bins - 1, Math.floor((v - lo) / w))]++; }
+    const edges = Array.from({ length: bins + 1 }, (_, k) => lo + k * w);
+    return { edges, counts, centers: edges.slice(0, -1).map((e) => e + w / 2), binWidth: w };
+  },
+  corr(a, b) {
+    let n = 0, ma = 0, mb = 0;
+    const len = Math.min(a.length, b.length);
+    for (let i = 0; i < len; i++) if (isNum(a[i]) && isNum(b[i])) { n++; ma += a[i]; mb += b[i]; }
+    if (n < 3) return NaN;
+    ma /= n; mb /= n;
+    let sab = 0, saa = 0, sbb = 0;
+    for (let i = 0; i < len; i++) if (isNum(a[i]) && isNum(b[i])) { const x = a[i] - ma, y = b[i] - mb; sab += x * y; saa += x * x; sbb += y * y; }
+    return saa && sbb ? sab / Math.sqrt(saa * sbb) : NaN;
+  },
+  linreg(x, y) {
+    let n = 0, mx = 0, my = 0;
+    const len = Math.min(x.length, y.length);
+    for (let i = 0; i < len; i++) if (isNum(x[i]) && isNum(y[i])) { n++; mx += x[i]; my += y[i]; }
+    if (n < 2) return { slope: NaN, intercept: NaN, r2: NaN, n };
+    mx /= n; my /= n;
+    let sxy = 0, sxx = 0, syy = 0;
+    for (let i = 0; i < len; i++) if (isNum(x[i]) && isNum(y[i])) { const a = x[i] - mx, b = y[i] - my; sxy += a * b; sxx += a * a; syy += b * b; }
+    const slope = sxy / sxx;
+    return { slope, intercept: my - slope * mx, r2: syy ? (sxy * sxy) / (sxx * syy) : NaN, n };
+  },
+  epochScale,
+  isTimeName: (name) => TIME_NAME.test(String(name || '')),
+  /** 在表（或表头信息）里找时间列：优先 ts/timestamp/time 等常见名，其次日期字符串列 */
+  timeColumn(t) {
+    for (const p of ['ts', 'timestamp', 'time', 'datetime', 'date', 't']) {
+      const c = t.find(p);
+      if (c && (t.type(c) === 'number' || t.type(c) === 'datetime')) return c;
+    }
+    const cols = t.columns;
+    return cols.find((c) => t.type(c) === 'datetime') || cols.find((c) => t.type(c) === 'number' && TIME_NAME.test(c)) || null;
+  },
+  /** 时长。unit: 'auto'（自动识别时间戳）| 's' | 'ms' | 'us' | 'ns' */
+  duration(values, unit) {
+    const lo = U.min(values || []), hi = U.max(values || []);
+    if (!Number.isFinite(lo)) return { seconds: null, span: NaN, text: '—' };
+    const scales = { s: 1000, ms: 1, us: 1e-3, ns: 1e-6 };
+    const sc = !unit || unit === 'auto' ? epochScale(values) : scales[unit];
+    if (sc == null) return { seconds: null, span: hi - lo, text: fmtNum(hi - lo) + '（原始单位）' };
+    const ms = (hi - lo) * sc;
+    return { seconds: ms / 1000, span: hi - lo, text: fmtDuration(ms) };
+  },
+  map(n, fn) { const o = new Float64Array(n); for (let i = 0; i < n; i++) o[i] = fn(i); return o; },
+};
+
+/* =====================================================================
+ * 插件注册表
+ * ===================================================================== */
+const Plugins = {
+  list: [],
+  byId: new Map(),
+  disabled: new Set(store.get('disabled', [])),
+  colorSeq: 0,
+  sorted() { return this.list.slice().sort((a, b) => b.priority - a.priority || a._order - b._order); },
+  isEnabled(id) { return !this.disabled.has(id); },
+  setEnabled(id, on) {
+    if (on) this.disabled.delete(id); else this.disabled.add(id);
+    store.set('disabled', [...this.disabled]);
+    schedulePluginsChanged();
+  },
+  remove(id) {
+    const p = this.byId.get(id);
+    if (!p) return;
+    this.list.splice(this.list.indexOf(p), 1);
+    this.byId.delete(id);
+    schedulePluginsChanged();
+  },
+};
+let loadingMeta = null;
+const pluginListeners = new Set();
+
+function compileMatcher(m) {
+  if (m == null) return () => true;
+  if (typeof m === 'function') return m;
+  if (typeof m !== 'object') throw new Error('match 必须是对象或函数');
+  const pathRe = m.path == null ? null : m.path instanceof RegExp ? m.path : globToRegExp(String(m.path));
+  const byName = pathRe && !(m.path instanceof RegExp) && !String(m.path).includes('/');
+  return (info) => {
+    if (m.columns && !m.columns.every((c) => info.find(c))) return false;
+    if (m.anyColumns && !m.anyColumns.some((c) => info.find(c))) return false;
+    if (m.numericColumns && !m.numericColumns.every((c) => info.isNumeric(info.find(c)))) return false;
+    if (pathRe && !pathRe.test(byName ? info.name : info.path)) return false;
+    if (m.minColumns && info.columns.length < m.minColumns) return false;
+    if (typeof m.test === 'function' && !m.test(info)) return false;
+    return true;
+  };
+}
+function globToRegExp(g) {
+  let re = '';
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i];
+    if (c === '*' && g[i + 1] === '*') {
+      if (g[i + 2] === '/') { re += '(?:.*/)?'; i += 2; } else { re += '.*'; i++; }
+    } else if (c === '*') re += '[^/]*';
+    else if (c === '?') re += '[^/]';
+    else re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp('^' + re + '$', 'i');
+}
+
+function registerPlugin(def) {
+  if (!def || typeof def !== 'object') throw new Error('registerPlugin 需要一个插件对象');
+  const id = String(def.id || '').trim();
+  if (!id) throw new Error('插件缺少 id');
+  const prev = Plugins.byId.get(id);
+  const seq = prev ? 0 : Plugins.colorSeq++;
+  const script = document.currentScript;
+  const meta = loadingMeta || { origin: script && script.src ? 'file' : 'runtime', src: script && script.src ? script.src : '' };
+  const p = Object.assign({}, def, {
+    id,
+    name: String(def.name || id),
+    version: def.version ? String(def.version) : '',
+    description: def.description ? String(def.description) : '',
+    priority: Number(def.priority) || 0,
+    fallback: !!def.fallback,
+    features: Array.isArray(def.features) ? def.features.filter(Boolean) : [],
+    params: Array.isArray(def.params) ? def.params.filter((d) => d && d.key) : [],
+    _match: compileMatcher(def.match),
+    _origin: meta.origin,
+    _src: meta.src || '',
+    _key: meta.key || null,
+    _order: prev ? prev._order : seq,
+    _color: prev ? prev._color : seq % 8,
+  });
+  if (prev) Plugins.list[Plugins.list.indexOf(prev)] = p;
+  else Plugins.list.push(p);
+  Plugins.byId.set(id, p);
+  if (loadingMeta) loadingMeta.ids.push(id);
+  schedulePluginsChanged();
+  return p;
+}
+
+/** 执行一段插件源码，返回其中注册的插件 id 列表 */
+function evalPluginSource(source, meta) {
+  loadingMeta = Object.assign({ ids: [] }, meta);
+  const m = loadingMeta;
+  try {
+    // 插件代码视为用户自己的可信代码，在全局作用域中执行
+    new Function(source)();
+  } finally {
+    loadingMeta = null;
+  }
+  return m.ids;
+}
+
+function loadScripts(list) {
+  const cur = document.currentScript;
+  const base = cur && cur.src ? cur.src : location.href;
+  return Promise.all((list || []).map((name) => new Promise((resolve) => {
+    const s = document.createElement('script');
+    s.src = new URL(name, base).href;
+    s.async = false;
+    s.onload = () => resolve(true);
+    s.onerror = () => { toast('插件文件加载失败：' + name, 'error'); resolve(false); };
+    document.head.append(s);
+  })));
+}
+
+/* 用户插件（保存在 localStorage） */
+function userPluginRecords() { return store.get('userPlugins', []); }
+function saveUserPluginRecords(list) { store.set('userPlugins', list); }
+function loadUserPlugins() {
+  for (const rec of userPluginRecords()) {
+    try { rec.ids = evalPluginSource(rec.source, { origin: 'user', key: rec.key }); }
+    catch (err) { toast('本地插件「' + (rec.name || rec.key) + '」加载失败：' + err.message, 'error'); }
+  }
+}
+/** 保存并加载插件源码。返回 { ids } 或抛出错误 */
+function saveUserPlugin(source, key, fileName) {
+  const list = userPluginRecords();
+  const rec = key ? list.find((r) => r.key === key) : null;
+  const newKey = rec ? rec.key : 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const ids = evalPluginSource(source, { origin: 'user', key: newKey });
+  if (!ids.length) throw new Error('代码中没有调用 CSVViewer.registerPlugin(...)');
+  if (rec) for (const id of rec.ids || []) if (!ids.includes(id)) Plugins.remove(id);
+  const first = Plugins.byId.get(ids[0]);
+  const next = { key: newKey, name: (first && first.name) || fileName || newKey, fileName: fileName || (rec && rec.fileName) || '', source, ids, updated: Date.now() };
+  // 同一插件 id 只保留最新的一份源码
+  const others = list.filter((r) => r.key !== newKey).map((r) => Object.assign({}, r, { ids: (r.ids || []).filter((id) => !ids.includes(id)) })).filter((r) => r.ids.length);
+  saveUserPluginRecords([...others, next]);
+  return { ids };
+}
+function deleteUserPlugin(key) {
+  const list = userPluginRecords();
+  const rec = list.find((r) => r.key === key);
+  if (!rec) return;
+  for (const id of rec.ids || []) Plugins.remove(id);
+  saveUserPluginRecords(list.filter((r) => r.key !== key));
+}
+
+/* 插件参数 */
+function getParams(p) {
+  const saved = store.get('params', {})[p.id] || {};
+  const out = {};
+  for (const d of p.params) out[d.key] = saved[d.key] !== undefined ? saved[d.key] : d.default;
+  return out;
+}
+function setParam(p, key, value) {
+  const all = store.get('params', {});
+  all[p.id] = Object.assign({}, all[p.id], { [key]: value });
+  store.set('params', all);
+}
+function isCollapsed(p) {
+  const c = store.get('collapsed', {});
+  return c[p.id] !== undefined ? c[p.id] : !!p.collapsed;
+}
+function setCollapsed(p, v) {
+  const c = store.get('collapsed', {});
+  c[p.id] = v;
+  store.set('collapsed', c);
+}
+
+function matchSummary(p) {
+  const m = p.match;
+  if (m == null) return '匹配所有 CSV';
+  if (typeof m === 'function') return '自定义匹配函数';
+  const parts = [];
+  const names = (list) => list.map((c) => (Array.isArray(c) ? c.join(' / ') : c)).join(', ');
+  if (m.columns) parts.push('需要列：' + names(m.columns));
+  if (m.anyColumns) parts.push('任一列：' + names(m.anyColumns));
+  if (m.numericColumns) parts.push('数值列：' + names(m.numericColumns));
+  if (m.path) parts.push('路径：' + String(m.path));
+  if (m.test) parts.push('自定义条件');
+  return parts.join(' · ') || '匹配所有 CSV';
+}
+function pluginColor(p) { return 'var(--s' + (p._color + 1) + ')'; }
+
+function makeCtx(p, table, entry, extra) {
+  return Object.assign({
+    plugin: { id: p.id, name: p.name, version: p.version },
+    file: entry ? { name: entry.name, path: entry.path, dir: entry.dir, size: entry.size } : null,
+    params: getParams(p),
+    utils: U,
+    fmt: fmtNum,
+    h,
+    echarts: window.echarts,
+    theme: themeTokens(),
+    renderChart: (el, spec) => { mountChart(el, () => specToOption(spec, table, themeTokens()), null); },
+  }, extra);
+}
+
+/** 依次计算所有已匹配插件的衍生特征。返回 Map<pluginId, string[]> 错误信息 */
+function applyFeatures(table, entry, plugins) {
+  table.removeDerived();
+  const errors = new Map();
+  for (const p of plugins) {
+    if (!p.features.length) continue;
+    const ctx = makeCtx(p, table, entry);
+    for (const f of p.features) {
+      try {
+        if (!f.name || typeof f.compute !== 'function') throw new Error('特征需要 name 和 compute()');
+        const vals = f.compute(table, ctx);
+        table.addColumn(f.name, vals, { source: p.id, label: f.label, unit: f.unit, description: f.description, type: f.type });
+      } catch (err) {
+        if (!errors.has(p.id)) errors.set(p.id, []);
+        errors.get(p.id).push('特征 ' + (f.name || '?') + '：' + ((err && err.message) || err));
+      }
+    }
+  }
+  return errors;
+}
+
+/* =====================================================================
+ * 图表：插件的 chart spec → ECharts option
+ * ===================================================================== */
+function themeTokens() {
+  const cs = getComputedStyle(document.documentElement);
+  const g = (n) => cs.getPropertyValue(n).trim();
+  return {
+    dark: document.documentElement.getAttribute('data-theme') === 'dark',
+    font: FONT,
+    surface: g('--surface'), text: g('--text'), text2: g('--text-2'), muted: g('--muted'),
+    grid: g('--grid'), axis: g('--axis'), border: g('--border-strong'), accent: g('--accent'),
+    series: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => g('--s' + i)),
+    divNeg: g('--div-neg'), divMid: g('--div-mid'), divPos: g('--div-pos'),
+    seq: [g('--seq-lo'), g('--seq-hi')],
+  };
+}
+function isPlain(o) { return !!o && typeof o === 'object' && Object.getPrototypeOf(o) === Object.prototype; }
+function mergeDeep(a, b) {
+  if (b === undefined) return a;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return b.map((v, i) => (isPlain(v) && isPlain(a[i]) ? mergeDeep(a[i], v) : v)).concat(a.slice(b.length));
+  }
+  if (isPlain(a) && isPlain(b)) {
+    const out = Object.assign({}, a);
+    for (const k in b) out[k] = k in a ? mergeDeep(a[k], b[k]) : b[k];
+    return out;
+  }
+  return b;
+}
+const toList = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
+const isVec = (v) => typeof v === 'string' || Array.isArray(v) || ArrayBuffer.isView(v) || !!(v && v.values);
+/** y 既可以是列名 / 列名数组（多条序列），也可以直接是一个数值数组（一条序列） */
+function yList(y) {
+  if (y == null) return [];
+  if (Array.isArray(y) && y.length && y.every(isVec)) return y;
+  return [y];
+}
+
+/** 把 x / y 解析成 {name, values, type}：列名、数组或 {name, values} 对象 */
+function resolveVec(v, table) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'string') {
+    const c = table && table.getColumn(v);
+    if (!c) throw new Error('列不存在：' + v);
+    return { name: c.name, values: c.values, type: c.type };
+  }
+  if (ArrayBuffer.isView(v)) return { name: '', values: v, type: 'number' };
+  if (Array.isArray(v)) return { name: '', values: v, type: v.some((x) => typeof x === 'string') ? 'string' : 'number' };
+  if (v && v.values) return { name: v.name || '', values: v.values, type: v.type || (ArrayBuffer.isView(v.values) ? 'number' : Array.from(v.values).some((x) => typeof x === 'string') ? 'string' : 'number') };
+  throw new Error('无法识别的数据：' + String(v));
+}
+function resolveXAxis(kind, xv) {
+  if (!xv) return { type: 'value', scale: 1, label: '行号' };
+  const label = xv.name || '';
+  if (kind === 'category' || xv.type === 'string') return { type: 'category', scale: 1, label };
+  if (xv.type === 'datetime') return { type: kind === 'value' ? 'value' : 'time', scale: 1, label };
+  if (kind === 'time') return { type: 'time', scale: epochScale(xv.values) || 1, label };
+  if (kind === 'value') return { type: 'value', scale: 1, label };
+  if (label && TIME_NAME.test(label)) {
+    const sc = epochScale(xv.values);
+    if (sc) return { type: 'time', scale: sc, label };
+  }
+  return { type: 'value', scale: 1, label };
+}
+
+function baseOption(T, o) {
+  o = o || {};
+  const opt = {
+    backgroundColor: 'transparent',
+    animation: !o.big,
+    animationDuration: 300,
+    color: T.series,
+    textStyle: { fontFamily: T.font, color: T.text2 },
+    grid: { left: 6, right: 16, top: o.legend ? 36 : 30, bottom: o.xName ? 24 : 6, containLabel: true },
+    tooltip: {
+      trigger: o.trigger || 'axis',
+      confine: true,
+      backgroundColor: T.surface,
+      borderColor: T.border,
+      borderWidth: 1,
+      padding: [7, 10],
+      textStyle: { color: T.text, fontSize: 12, fontFamily: T.font },
+      extraCssText: 'border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.14);',
+      axisPointer: { type: 'line', lineStyle: { color: T.muted, width: 1, type: 'solid' } },
+      valueFormatter: (v) => fmtNum(v),
+    },
+    toolbox: {
+      right: 2, top: 0, itemSize: 13, itemGap: 9,
+      iconStyle: { borderColor: T.muted },
+      emphasis: { iconStyle: { borderColor: T.text, textFill: T.text } },
+      feature: Object.assign(
+        o.zoom === false ? {} : { dataZoom: { yAxisIndex: 'none', title: { zoom: '框选缩放', back: '撤销缩放' } }, restore: { title: '还原' } },
+        { saveAsImage: { title: '保存为图片', pixelRatio: 2, backgroundColor: T.surface, name: o.name || 'chart' } }
+      ),
+    },
+    dataZoom: o.zoom === false ? [] : [{ type: 'inside', xAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: 'ctrl', moveOnMouseWheel: false, moveOnMouseMove: true }],
+  };
+  if (o.legend) {
+    const line = o.legendIcon === 'line';
+    opt.legend = {
+      type: 'scroll', top: 0, left: 0, right: 90,
+      icon: line ? 'rect' : o.legendIcon || 'roundRect',
+      itemWidth: line ? 16 : 10, itemHeight: line ? 3 : 10, itemGap: 14,
+      textStyle: { color: T.text2, fontSize: 12 },
+      pageIconColor: T.text2, pageIconInactiveColor: T.axis, pageTextStyle: { color: T.muted },
+    };
+  }
+  return opt;
+}
+function xAxisStyle(T) {
+  return {
+    axisLine: { onZero: false, lineStyle: { color: T.axis } },
+    axisTick: { show: false },
+    axisLabel: { color: T.muted, fontSize: 11, hideOverlap: true },
+    splitLine: { show: false },
+    nameTextStyle: { color: T.muted, fontSize: 11 },
+  };
+}
+function yAxisStyle(T) {
+  return {
+    axisLine: { show: false },
+    axisTick: { show: false },
+    axisLabel: { color: T.muted, fontSize: 11, formatter: fmtAxis },
+    splitLine: { lineStyle: { color: T.grid, width: 1, type: 'solid' } },
+    nameTextStyle: { color: T.muted, fontSize: 11 },
+  };
+}
+
+function specToOption(spec, table, T) {
+  const type = spec.type || 'line';
+  let opt;
+  if (spec.echarts) opt = mergeDeep(baseOption(T, {}), typeof spec.echarts === 'function' ? spec.echarts(T, table) : spec.echarts);
+  else if (type === 'histogram') opt = histogramOption(spec, table, T);
+  else if (type === 'heatmap') opt = heatmapOption(spec, table, T);
+  else opt = xyOption(spec, table, T, type);
+  if (spec.option) opt = mergeDeep(opt, spec.option);
+  return opt;
+}
+
+function xyOption(spec, table, T, type) {
+  const defs = spec.series ? toList(spec.series) : yList(spec.y).map((y) => ({ y }));
+  if (!defs.length) throw new Error('图表缺少 y');
+  const resolved = defs.map((s, i) => {
+    const xv = resolveVec(s.x !== undefined ? s.x : spec.x, table);
+    const yv = resolveVec(s.y, table);
+    if (!yv) throw new Error('系列缺少 y');
+    if (yv.type === 'string') throw new Error('列 "' + yv.name + '" 不是数值列');
+    return { def: s, xv, yv, type: s.type || type, name: s.name || yv.name || '系列 ' + (i + 1) };
+  });
+  const ax = resolveXAxis(spec.xType || 'auto', resolved[0].xv);
+  const horizontal = !!spec.horizontal;
+  const allScatter = resolved.every((r) => r.type === 'scatter');
+  const allBar = resolved.every((r) => r.type === 'bar');
+  let total = 0;
+  const series = resolved.map((r, i) => {
+    const s = buildSeries(r, ax, T, i, resolved.length, spec, horizontal);
+    total += s.data.length;
+    return s;
+  });
+  const xName = spec.xLabel !== undefined ? spec.xLabel : ax.label;
+  const opt = baseOption(T, {
+    legend: series.length > 1,
+    trigger: allScatter || allBar ? 'item' : 'axis',
+    legendIcon: allScatter ? 'circle' : allBar ? 'roundRect' : 'line',
+    big: total > 20000,
+    xName: !!xName && !horizontal,
+    name: spec.title,
+  });
+  const xAxis = Object.assign(xAxisStyle(T), {
+    type: ax.type,
+    name: xName || '',
+    nameLocation: 'middle',
+    nameGap: 24,
+    boundaryGap: ax.type === 'category',
+  });
+  if (ax.type === 'value' || ax.type === 'time') { xAxis.min = 'dataMin'; xAxis.max = 'dataMax'; }
+  if (ax.type === 'value') xAxis.axisLabel.formatter = fmtAxis;
+  if (ax.type === 'category') Object.assign(xAxis.axisLabel, { width: horizontal ? 150 : 90, overflow: 'truncate' });
+  const yAxis = Object.assign(yAxisStyle(T), { type: 'value', scale: !spec.yZero && !allBar, name: '' });
+  if (spec.yMin != null) yAxis.min = spec.yMin;
+  if (spec.yMax != null) yAxis.max = spec.yMax;
+  if (allBar && spec.labels) {
+    // 给条形末端的数值标签留出空间（ECharts 按数据跨度计算留白，这里换算成以 0 为基线的跨度）
+    let lo = Infinity, hi = -Infinity;
+    for (const s of series) for (const d of s.data) { const v = (d.value || d)[horizontal ? 0 : 1]; if (v < lo) lo = v; if (v > hi) hi = v; }
+    if (Number.isFinite(lo)) {
+      const span = Math.max(hi, 0) - Math.min(lo, 0) || 1;
+      const dataSpan = hi - lo || Math.abs(hi) || 1;
+      const gap = ((0.18 * span) / dataSpan * 100).toFixed(1) + '%';
+      yAxis.boundaryGap = [lo < 0 ? gap : 0, hi > 0 ? gap : 0];
+    }
+  }
+  if (horizontal) {
+    // 横向条形图：类别在 y 轴，数值在 x 轴
+    Object.assign(xAxis, { inverse: true, axisLine: { show: false }, splitLine: { show: false } });
+    opt.xAxis = Object.assign(yAxisStyle(T), { type: 'value', scale: yAxis.scale, boundaryGap: yAxis.boundaryGap, splitLine: { lineStyle: { color: T.grid } } });
+    opt.yAxis = Object.assign(xAxis, { name: '', axisLine: { onZero: false, lineStyle: { color: T.axis } } });
+    opt.dataZoom = [];
+    opt.grid.right = 40;
+  } else {
+    opt.xAxis = xAxis;
+    opt.yAxis = yAxis;
+  }
+  if (allScatter || allBar) {
+    const xn = xName || 'x';
+    opt.tooltip.formatter = (p) => {
+      const v = p.value || [];
+      const xVal = horizontal ? v[1] : v[0], yVal = horizontal ? v[0] : v[1];
+      const xs = ax.type === 'time' ? fmtDate(xVal) : typeof xVal === 'number' ? fmtNum(xVal) : xVal;
+      let s = '<div style="font-weight:600;font-size:13px">' + esc(fmtNum(yVal)) + '</div>';
+      s += '<div style="color:' + T.text2 + '">' + esc(p.seriesName) + '</div>';
+      s += '<div style="color:' + T.muted + '">' + esc(xn) + '：' + esc(xs) + '</div>';
+      return s;
+    };
+  }
+  for (const ml of toList(spec.markLines)) {
+    const s = series[0];
+    s.markLine = s.markLine || { symbol: 'none', silent: true, animation: false, lineStyle: { color: T.muted, width: 1, type: 'solid' }, label: { color: T.text2, fontSize: 11 }, data: [] };
+    if (ml.y != null) s.markLine.data.push({ yAxis: ml.y, name: ml.label || '', label: { formatter: ml.label || String(ml.y), position: 'insideEndTop' } });
+    if (ml.x != null) s.markLine.data.push({ xAxis: ml.x * ax.scale, name: ml.label || '', label: { formatter: ml.label || '', position: 'insideEndTop' } });
+  }
+  opt.series = series;
+  return opt;
+}
+
+function buildSeries(r, ax, T, i, total, spec, horizontal) {
+  const color = r.def.color || T.series[(r.def.colorIndex != null ? r.def.colorIndex : i) % T.series.length];
+  const ys = r.yv.values, xs = r.xv ? r.xv.values : null, n = ys.length;
+  const cat = ax.type === 'category', sc = ax.scale;
+  const data = [];
+  let sorted = true, last = -Infinity;
+  for (let k = 0; k < n; k++) {
+    const y = ys[k];
+    if (typeof y !== 'number' || !Number.isFinite(y)) continue;
+    let x = k;
+    if (xs) {
+      x = xs[k];
+      if (cat) { if (x == null || x === '') continue; x = String(x); }
+      else {
+        if (typeof x !== 'number' || !Number.isFinite(x)) continue;
+        x *= sc;
+        if (x < last) sorted = false;
+        last = x;
+      }
+    }
+    data.push(horizontal ? [y, x] : [x, y]);
+  }
+  const t = r.type;
+  if (!sorted && LINEISH.has(t)) data.sort((a, b) => a[0] - b[0]);
+  const base = { name: r.name, data, emphasis: { focus: total > 1 ? 'series' : 'none' } };
+  if (t === 'scatter') {
+    const big = data.length > 5000, mid = data.length > 1200;
+    return Object.assign(base, {
+      type: 'scatter',
+      symbolSize: big ? 4 : mid ? 6 : 8,
+      large: big, largeThreshold: 5000,
+      itemStyle: { color, opacity: big ? 0.5 : mid ? 0.7 : 0.9, borderColor: T.surface, borderWidth: mid ? 0 : 2 },
+      emphasis: { scale: 1.5, focus: total > 1 ? 'series' : 'none' },
+    });
+  }
+  if (t === 'bar') {
+    // 负值条形：圆角与数值标签放到数据端
+    const negEnd = { borderRadius: horizontal ? [4, 0, 0, 4] : [0, 0, 4, 4] };
+    const negLabel = spec.labels ? { position: horizontal ? 'left' : 'bottom' } : undefined;
+    base.data = data.map((d) => ((horizontal ? d[0] : d[1]) < 0 ? { value: d, itemStyle: negEnd, label: negLabel } : d));
+    return Object.assign(base, {
+      type: 'bar',
+      barMaxWidth: 24,
+      itemStyle: { color, borderRadius: horizontal ? [0, 4, 4, 0] : [4, 4, 0, 0] },
+      large: data.length > 3000,
+      label: spec.labels ? {
+        show: true, position: horizontal ? 'right' : 'top', color: T.text2, fontSize: 11,
+        formatter: (p) => fmtNum(horizontal ? p.value[0] : p.value[1]),
+      } : undefined,
+    });
+  }
+  return Object.assign(base, {
+    type: 'line',
+    showSymbol: data.length <= 40,
+    symbol: 'circle',
+    symbolSize: 8,
+    sampling: 'lttb',
+    step: t === 'step' ? 'end' : false,
+    lineStyle: { width: 2, color, cap: 'round', join: 'round' },
+    itemStyle: { color, borderColor: T.surface, borderWidth: 2 },
+    areaStyle: t === 'area' ? { color, opacity: 0.1 } : undefined,
+    connectNulls: false,
+    emphasis: { focus: total > 1 ? 'series' : 'none', lineStyle: { width: 2 } },
+  });
+}
+
+function histogramOption(spec, table, T) {
+  const ys = yList(spec.y).map((y) => resolveVec(y, table)).filter(Boolean);
+  if (!ys.length) throw new Error('直方图缺少 y');
+  const bins = Math.max(2, Math.min(200, Math.round(spec.bins || 30)));
+  let lo = Infinity, hi = -Infinity;
+  for (const yv of ys) for (let i = 0; i < yv.values.length; i++) { const v = yv.values[i]; if (isNum(v)) { if (v < lo) lo = v; if (v > hi) hi = v; } }
+  if (spec.range) [lo, hi] = spec.range;
+  if (!Number.isFinite(lo)) throw new Error('没有可用的数值');
+  if (hi === lo) { lo -= 0.5; hi += 0.5; }
+  const w = (hi - lo) / bins;
+  const labels = Array.from({ length: bins }, (_, k) => fmtAxis(lo + w * (k + 0.5)));
+  const series = ys.map((yv, i) => {
+    const counts = new Array(bins).fill(0);
+    for (let k = 0; k < yv.values.length; k++) {
+      const v = yv.values[k];
+      if (isNum(v) && v >= lo && v <= hi) counts[Math.min(bins - 1, Math.floor((v - lo) / w))]++;
+    }
+    return {
+      type: 'bar', name: yv.name || '系列 ' + (i + 1), data: counts,
+      barCategoryGap: ys.length > 1 ? '20%' : 2,
+      itemStyle: { color: T.series[i % 8], borderRadius: [3, 3, 0, 0] },
+      emphasis: { itemStyle: { opacity: 0.8 } },
+    };
+  });
+  const xName = spec.xLabel !== undefined ? spec.xLabel : ys.length === 1 ? ys[0].name : '';
+  const opt = baseOption(T, { legend: ys.length > 1, trigger: 'item', legendIcon: 'roundRect', xName: !!xName, name: spec.title });
+  opt.xAxis = Object.assign(xAxisStyle(T), { type: 'category', data: labels, name: xName, nameLocation: 'middle', nameGap: 24 });
+  opt.yAxis = Object.assign(yAxisStyle(T), { type: 'value', minInterval: 1 });
+  opt.tooltip.formatter = (p) =>
+    '<div style="font-weight:600;font-size:13px">' + p.value + ' 条</div>' +
+    '<div style="color:' + T.muted + '">' + esc(fmtNum(lo + w * p.dataIndex)) + ' – ' + esc(fmtNum(lo + w * (p.dataIndex + 1))) + '</div>' +
+    (ys.length > 1 ? '<div style="color:' + T.text2 + '">' + esc(p.seriesName) + '</div>' : '');
+  opt.series = series;
+  return opt;
+}
+
+function heatmapOption(spec, table, T) {
+  const xc = (spec.xCategories || []).map(String), yc = (spec.yCategories || []).map(String);
+  const raw = spec.data || [];
+  const finite = raw.map((d) => d[2]).filter(isNum);
+  const min = spec.min != null ? spec.min : finite.length ? Math.min(...finite) : 0;
+  const max = spec.max != null ? spec.max : finite.length ? Math.max(...finite) : 1;
+  const diverging = spec.diverging != null ? spec.diverging : min < 0 && max > 0;
+  const showLabel = spec.labels != null ? spec.labels : xc.length <= 10 && yc.length <= 10;
+  const mid = (min + max) / 2, half = (max - min) / 2 || 1;
+  const data = raw.map(([i, j, v]) => {
+    const ok = isNum(v);
+    const strong = ok && (diverging ? Math.abs(v - mid) / half > 0.55 : (v - min) / (max - min || 1) > 0.55);
+    return { value: [i, j, ok ? v : '-'], label: { color: strong ? '#ffffff' : T.text } };
+  });
+  const opt = baseOption(T, { trigger: 'item', zoom: false, name: spec.title });
+  opt.grid = { left: 6, right: 16, top: 30, bottom: 44, containLabel: true };
+  opt.xAxis = { type: 'category', data: xc, axisLine: { show: false }, axisTick: { show: false }, splitArea: { show: false }, axisLabel: { color: T.muted, fontSize: 11, interval: 0, rotate: xc.length > 6 ? 35 : 0, width: 96, overflow: 'truncate' } };
+  opt.yAxis = { type: 'category', data: yc, inverse: true, axisLine: { show: false }, axisTick: { show: false }, splitArea: { show: false }, axisLabel: { color: T.muted, fontSize: 11, interval: 0, width: 120, overflow: 'truncate' } };
+  opt.visualMap = {
+    min, max, calculable: false, orient: 'horizontal', left: 'center', bottom: 0,
+    itemWidth: 10, itemHeight: 160, precision: 2,
+    textStyle: { color: T.muted, fontSize: 11 },
+    inRange: { color: diverging ? [T.divNeg, T.divMid, T.divPos] : T.seq },
+  };
+  opt.series = [{
+    type: 'heatmap', data,
+    label: { show: showLabel, fontSize: 11, formatter: (p) => (typeof p.value[2] === 'number' ? p.value[2].toFixed(2) : '') },
+    itemStyle: { borderColor: T.surface, borderWidth: 2, borderRadius: 4 },
+    emphasis: { itemStyle: { borderColor: T.text, borderWidth: 1.5 } },
+  }];
+  opt.tooltip.formatter = (p) =>
+    '<div style="font-weight:600;font-size:13px">' + (typeof p.value[2] === 'number' ? esc(fmtNum(p.value[2])) : '—') + '</div>' +
+    '<div style="color:' + T.muted + '">' + esc(xc[p.value[0]]) + ' × ' + esc(yc[p.value[1]]) + '</div>';
+  return opt;
+}
+
+/* 图表生命周期：进入视口才初始化，离开页面时统一销毁 */
+const Charts = {
+  instances: new Set(),
+  io: null,
+  ro: null,
+  init() {
+    this.io = new IntersectionObserver((entries) => {
+      for (const en of entries) {
+        if (!en.isIntersecting) continue;
+        this.io.unobserve(en.target);
+        if (en.target.__mount) en.target.__mount();
+      }
+    }, { rootMargin: '300px 0px' });
+    this.ro = new ResizeObserver((entries) => {
+      for (const en of entries) {
+        const inst = en.target.__chart;
+        if (inst && !inst.isDisposed()) inst.resize();
+      }
+    });
+  },
+  disposeIn(el) {
+    if (!el) this.io.disconnect();
+    for (const inst of [...this.instances]) {
+      const dom = inst.getDom();
+      if (!el || el.contains(dom)) {
+        this.ro.unobserve(dom);
+        try { inst.dispose(); } catch (e) { /* already gone */ }
+        this.instances.delete(inst);
+      }
+    }
+  },
+};
+let groupSeq = 0;
+function mountChart(host, getOption, group) {
+  host.__mount = () => {
+    host.__mount = null;
+    if (!window.echarts) { host.append(h('div', { class: 'chart-msg bad' }, 'ECharts 未加载，无法绘图')); return; }
+    let option;
+    try { option = getOption(); }
+    catch (err) { host.append(h('div', { class: 'chart-msg bad' }, '图表出错：' + ((err && err.message) || err))); return; }
+    const inst = echarts.init(host, null, { renderer: 'canvas' });
+    try { inst.setOption(option); }
+    catch (err) { inst.dispose(); host.append(h('div', { class: 'chart-msg bad' }, '图表出错：' + ((err && err.message) || err))); return; }
+    if (group) { inst.group = group; echarts.connect(group); }
+    host.__chart = inst;
+    Charts.instances.add(inst);
+    Charts.ro.observe(host);
+  };
+  Charts.io.observe(host);
+}
+function chartCard(spec, table, group, opts) {
+  opts = opts || {};
+  const type = spec.type || 'line';
+  const span = spec.span != null ? +spec.span : LINEISH.has(type) && !spec.echarts ? 2 : 1;
+  const height = spec.height || (span === 2 ? 240 : 280);
+  const host = h('div', { class: 'chart', style: { height: height + 'px' } });
+  const sub = spec.subtitle || spec.yLabel || '';
+  const card = h('div', { class: 'chart-card' + (span >= 2 ? ' span-2' : '') },
+    h('div', { class: 'chart-head' },
+      h('div', { class: 'chart-title' }, spec.title || ''),
+      sub ? h('div', { class: 'chart-sub', title: sub }, sub) : null,
+      h('div', { class: 'grow' }),
+      opts.onRemove ? h('button', { class: 'icon-btn sm', title: '移除此图', 'aria-label': '移除此图', onclick: opts.onRemove }, icon('x', 14)) : null),
+    host);
+  mountChart(host, () => specToOption(spec, table, themeTokens()), group);
+  return card;
+}
+function chartGrid(specs, table) {
+  const grid = h('div', { class: 'chart-grid' });
+  const gid = 'g' + ++groupSeq;
+  for (const spec of specs) {
+    let group = null;
+    if (spec.group !== false) {
+      if (typeof spec.group === 'string') group = gid + ':' + spec.group;
+      else if (typeof spec.x === 'string' && !spec.echarts && spec.type !== 'histogram' && spec.type !== 'heatmap' && !spec.horizontal) group = gid + ':' + spec.x.toLowerCase();
+    }
+    grid.append(chartCard(spec, table, group));
+  }
+  return grid;
+}
+
+/* =====================================================================
+ * 应用状态
+ * ===================================================================== */
+const state = {
+  rootName: '',
+  dirHandle: null,
+  entries: [],
+  byId: new Map(),
+  tree: null,
+  scanning: false,
+  scanDone: 0,
+  view: { kind: 'welcome' },
+  tab: store.get('tab', 'plugins'),
+  search: '',
+  filter: null,
+  collapsed: new Set(),
+  selected: [],
+  selColor: new Map(),
+  visibleFiles: [],
+  folderPlugins: [],
+  batches: new Map(),
+  compare: { x: null, y: null, type: 'line', align: true },
+};
+let scanGen = 0;
+let renderSeq = 0;
+let lastViewKey = '';
+
+const TableCache = {
+  map: new Map(),
+  maxEntries: 8,
+  maxBytes: 400 * 1024 * 1024,
+  get(id) {
+    const t = this.map.get(id);
+    if (t) { this.map.delete(id); this.map.set(id, t); }
+    return t;
+  },
+  set(id, t) {
+    this.map.set(id, t);
+    let total = 0;
+    for (const x of this.map.values()) total += x.file.size;
+    while ((this.map.size > this.maxEntries || total > this.maxBytes) && this.map.size > 1) {
+      const [k, x] = this.map.entries().next().value;
+      this.map.delete(k);
+      total -= x.file.size;
+    }
+  },
+  clear() { this.map.clear(); },
+};
+const inflight = new Map();
+function getTable(e) {
+  const hit = TableCache.get(e.id);
+  if (hit) return Promise.resolve(hit);
+  if (inflight.has(e.id)) return inflight.get(e.id);
+  const pr = Parser.parse(e.file, { delimiter: e.delimiter || null })
+    .then((res) => {
+      const t = new DataTable(res, e);
+      TableCache.set(e.id, t);
+      e.rows = t.rowCount;
+      e.rowsExact = true;
+      return t;
+    })
+    .finally(() => inflight.delete(e.id));
+  inflight.set(e.id, pr);
+  return pr;
+}
+
+/** 表头信息：插件 match() 拿到的 info */
+function entryInfo(e) {
+  if (e._info) return e._info;
+  const cols = e.columns || [], types = e.types || [];
+  const lower = new Map();
+  cols.forEach((c) => { const k = c.trim().toLowerCase(); if (!lower.has(k)) lower.set(k, c); });
+  const typeOf = new Map(cols.map((c, i) => [c, types[i]]));
+  const find = (n) => {
+    if (Array.isArray(n)) { for (const x of n) { const c = find(x); if (c) return c; } return null; }
+    if (n == null) return null;
+    return typeOf.has(n) ? n : lower.get(String(n).trim().toLowerCase()) || null;
+  };
+  e._info = {
+    name: e.name, path: e.path, dir: e.dir, size: e.size,
+    columns: cols.slice(),
+    numericColumns: cols.filter((c, i) => types[i] === 'number'),
+    find,
+    has: (...names) => names.every((n) => !!find(n)),
+    type: (n) => { const c = find(n); return c ? typeOf.get(c) : null; },
+    isNumeric: (n) => { const c = find(n); return !!c && typeOf.get(c) === 'number'; },
+  };
+  return e._info;
+}
+function computeMatches() {
+  const plugins = Plugins.sorted();
+  for (const e of state.entries) {
+    if (!e.columns) { e.matches = []; e.matchAll = []; continue; }
+    const info = entryInfo(e);
+    e.matchAll = plugins.filter((p) => {
+      try { return !!p._match(info); }
+      catch (err) { console.warn('[CSV Lens] 插件 ' + p.id + ' 的 match() 出错：', err); return false; }
+    }).map((p) => p.id);
+    const active = e.matchAll.filter((id) => Plugins.isEnabled(id)).map((id) => Plugins.byId.get(id));
+    const primary = active.filter((p) => !p.fallback);
+    e.matches = (primary.length ? primary : active).map((p) => p.id);
+  }
+}
+function pluginsFor(e) { return (e.matches || []).map((id) => Plugins.byId.get(id)).filter(Boolean); }
+
+let pluginsChangedTimer = 0;
+function schedulePluginsChanged() {
+  clearTimeout(pluginsChangedTimer);
+  pluginsChangedTimer = setTimeout(onPluginsChanged, 30);
+}
+function onPluginsChanged() {
+  computeMatches();
+  updatePluginButton();
+  renderSidebar();
+  renderMain({ keepScroll: true });
+  for (const fn of pluginListeners) fn();
+}
+
+/* =====================================================================
+ * 读取目录
+ * ===================================================================== */
+async function walkHandle(dir, prefix, out) {
+  for await (const [name, handle] of dir.entries()) {
+    if (handle.kind === 'directory') {
+      if (SKIP_DIRS.has(name)) continue;
+      await walkHandle(handle, prefix + name + '/', out);
+    } else if (DATA_EXT.test(name) || PLUGIN_EXT.test(name)) {
+      out.push({ path: prefix + name, file: await handle.getFile() });
+    }
+  }
+}
+async function walkEntry(entry, prefix, out) {
+  if (entry.isFile) {
+    if (DATA_EXT.test(entry.name) || PLUGIN_EXT.test(entry.name)) {
+      out.push({ path: prefix + entry.name, file: await new Promise((res, rej) => entry.file(res, rej)) });
+    }
+  } else if (entry.isDirectory) {
+    if (SKIP_DIRS.has(entry.name)) return;
+    const reader = entry.createReader();
+    for (;;) {
+      const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+      if (!batch.length) break;
+      for (const child of batch) await walkEntry(child, prefix + entry.name + '/', out);
+    }
+  }
+}
+async function openFolder() {
+  if (window.showDirectoryPicker) {
+    try {
+      const handle = await window.showDirectoryPicker({ id: 'csvlens', mode: 'read' });
+      await loadFromHandle(handle);
+      return;
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      console.warn('[CSV Lens] showDirectoryPicker 不可用，改用文件选择框', err);
+    }
+  }
+  $('#dirInput').click();
+}
+async function loadFromHandle(handle) {
+  const busy = toast('正在遍历目录「' + handle.name + '」…', 'info', { sticky: true, spinner: true });
+  const items = [];
+  try { await walkHandle(handle, '', items); }
+  catch (err) { busy.close(); toast('读取目录失败：' + err.message, 'error'); return; }
+  busy.close();
+  await loadCollection(items, handle.name, handle);
+}
+function rescan() {
+  if (state.dirHandle) loadFromHandle(state.dirHandle);
+  else openFolder();
+}
+async function handleDrop(dt) {
+  const entries = [];
+  for (const it of Array.from(dt.items || [])) {
+    if (it.kind !== 'file') continue;
+    const en = it.webkitGetAsEntry && it.webkitGetAsEntry();
+    if (en) entries.push(en);
+  }
+  const items = [], scripts = [];
+  if (entries.length) {
+    for (const en of entries) {
+      if (en.isFile && /\.js$/i.test(en.name)) scripts.push(await new Promise((res, rej) => en.file(res, rej)));
+      else await walkEntry(en, '', items);
+    }
+  } else {
+    for (const f of Array.from(dt.files || [])) {
+      if (/\.js$/i.test(f.name)) scripts.push(f);
+      else items.push({ path: f.name, file: f });
+    }
+  }
+  if (scripts.length) await importPluginFiles(scripts);
+  if (!items.length) {
+    if (!scripts.length) toast('没有找到 CSV 文件', 'error');
+    return;
+  }
+  const dirs = entries.filter((en) => en.isDirectory);
+  let root = '拖入的文件';
+  if (entries.length === 1 && dirs.length === 1) {
+    root = dirs[0].name;
+    for (const it of items) if (it.path.startsWith(root + '/')) it.path = it.path.slice(root.length + 1);
+  }
+  await loadCollection(items, root, null);
+}
+function onDirInput(ev) {
+  const files = Array.from(ev.target.files || []);
+  ev.target.value = '';
+  if (!files.length) return;
+  const rel = files[0].webkitRelativePath || '';
+  const root = rel.includes('/') ? rel.split('/')[0] : '已选目录';
+  const items = files.map((f) => {
+    let p = f.webkitRelativePath || f.name;
+    if (p.startsWith(root + '/')) p = p.slice(root.length + 1);
+    return { path: p, file: f };
+  });
+  loadCollection(items, root, null);
+}
+
+async function loadCollection(items, rootName, handle) {
+  const csv = [], plug = [];
+  for (const it of items) {
+    if (it.path.split('/').some((s) => SKIP_DIRS.has(s))) continue;
+    if (PLUGIN_EXT.test(it.path)) plug.push(it);
+    else if (DATA_EXT.test(it.path)) csv.push(it);
+  }
+  if (!csv.length) { toast('「' + rootName + '」中没有找到 .csv / .tsv 文件', 'error'); return; }
+  csv.sort((a, b) => a.path.localeCompare(b.path, 'zh-CN', { numeric: true }));
+
+  const prev = state.view.kind === 'file' && state.byId.get(state.view.id);
+  const prevPath = prev && state.rootName === rootName ? prev.path : null;
+  scanGen++;
+  TableCache.clear();
+  state.batches.clear();
+  state.selected = [];
+  state.selColor.clear();
+  state.rootName = rootName;
+  state.dirHandle = handle;
+  state.entries = csv.map((it, i) => {
+    const parts = it.path.split('/');
+    const name = parts.pop();
+    return { id: i + 1, path: it.path, name, dir: parts.join('/'), size: it.file.size, mtime: it.file.lastModified, file: it.file, columns: null, types: null, matches: [], matchAll: [] };
+  });
+  state.byId = new Map(state.entries.map((e) => [e.id, e]));
+  state.tree = buildTree(state.entries, rootName);
+  state.collapsed = new Set();
+  if (state.entries.length > 150) {
+    const walk = (node, depth) => { for (const d of node.dirs.values()) { if (depth >= 1) state.collapsed.add(d.path); walk(d, depth + 1); } };
+    walk(state.tree, 0);
+  }
+  const reopen = prevPath && state.entries.find((e) => e.path === prevPath);
+  state.view = reopen ? { kind: 'file', id: reopen.id } : { kind: 'overview', scope: '' };
+  state.folderPlugins = plug;
+  updateRootLabel();
+  renderSidebar();
+  renderMain();
+  await scanHeaders();
+  if (plug.length) {
+    toast('数据目录中发现 ' + plug.length + ' 个插件文件（*.plugin.js）', 'info', {
+      sticky: true,
+      action: { label: '加载', run: loadFolderPlugins },
+    });
+  }
+}
+async function loadFolderPlugins() {
+  let n = 0;
+  for (const it of state.folderPlugins) {
+    try { n += evalPluginSource(await it.file.text(), { origin: 'folder', src: it.path }).length; }
+    catch (err) { toast('插件 ' + it.path + ' 加载失败：' + err.message, 'error'); }
+  }
+  if (n) toast('已加载 ' + n + ' 个数据目录插件', 'success');
+}
+
+async function scanHeaders() {
+  const gen = scanGen, list = state.entries;
+  state.scanning = true;
+  state.scanDone = 0;
+  renderScan();
+  let i = 0, lastPaint = 0;
+  const worker = async () => {
+    while (i < list.length) {
+      if (gen !== scanGen) return;
+      const e = list[i++];
+      await scanHeader(e);
+      state.scanDone++;
+      const now = performance.now();
+      if (now - lastPaint > 120) { lastPaint = now; renderScan(); }
+    }
+  };
+  await Promise.all(Array.from({ length: 6 }, worker));
+  if (gen !== scanGen) return;
+  state.scanning = false;
+  renderScan();
+  computeMatches();
+  renderSidebar();
+  renderMain({ keepScroll: true });
+}
+async function scanHeader(e) {
+  try {
+    const truncated = e.size > HEADER_CHUNK;
+    const buf = await e.file.slice(0, HEADER_CHUNK).arrayBuffer();
+    const dec = csvDecode(buf, truncated);
+    const res = csvBuildTable(dec.text, { maxRows: 201, dropLast: truncated, delimiter: /\.tsv$/i.test(e.name) ? '\t' : null });
+    e.columns = res.columns.map((c) => c.name);
+    e.types = res.columns.map((c) => c.type);
+    e.delimiter = res.delimiter;
+    e.encoding = dec.encoding;
+    e.headerless = res.headerless;
+    if (res.complete) { e.rows = res.rowCount; e.rowsExact = true; }
+    else {
+      const bytesPerChar = buf.byteLength / Math.max(1, dec.text.length);
+      const bytesPerRow = (res.consumed * bytesPerChar) / Math.max(1, res.rowCount + (res.headerless ? 0 : 1));
+      e.rows = Math.max(res.rowCount, Math.round(e.size / Math.max(1, bytesPerRow)) - (res.headerless ? 0 : 1));
+      e.rowsExact = false;
+    }
+  } catch (err) {
+    e.error = (err && err.message) || String(err);
+    e.columns = [];
+    e.types = [];
+  }
+  e._info = null;
+}
+
+function buildTree(entries, rootName) {
+  const root = { name: rootName, path: '', dirs: new Map(), files: [], count: 0 };
+  for (const e of entries) {
+    let node = root;
+    root.count++;
+    if (e.dir) {
+      for (const seg of e.dir.split('/')) {
+        let nx = node.dirs.get(seg);
+        if (!nx) { nx = { name: seg, path: node.path ? node.path + '/' + seg : seg, dirs: new Map(), files: [], count: 0 }; node.dirs.set(seg, nx); }
+        node = nx;
+        node.count++;
+      }
+    }
+    node.files.push(e);
+  }
+  return root;
+}
+function scopeFiles(scope) {
+  return scope ? state.entries.filter((e) => e.dir === scope || e.dir.startsWith(scope + '/')) : state.entries;
+}
+function schemaKey(e) { return (e.columns || []).map((c) => c.trim().toLowerCase()).join('\u0001'); }
+
+/* =====================================================================
+ * 通用 UI 组件
+ * ===================================================================== */
+function toast(msg, kind, opts) {
+  kind = kind || 'info';
+  opts = opts || {};
+  function close() { el.remove(); }
+  const el = h('div', { class: 'toast ' + kind },
+    opts.spinner ? h('span', { class: 'spin', style: { marginTop: '2px' } }) : icon(kind === 'error' ? 'alert' : kind === 'success' ? 'check' : 'info'),
+    h('div', { class: 'toast-body' }, msg),
+    opts.action ? h('button', { class: 'btn sm', onclick: () => { close(); opts.action.run(); } }, opts.action.label) : null,
+    h('button', { class: 'icon-btn sm', 'aria-label': '关闭', onclick: close }, icon('x', 14)));
+  $('#toasts').append(el);
+  if (!opts.sticky) setTimeout(close, opts.timeout || (kind === 'error' ? 7000 : 3500));
+  return { close };
+}
+function openModal(o) {
+  function close() {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey);
+    if (o.onClose) o.onClose();
+  }
+  function onKey(ev) { if (ev.key === 'Escape') close(); }
+  const overlay = h('div', { class: 'modal-overlay', onmousedown: (ev) => { if (ev.target === overlay) close(); } },
+    h('div', { class: 'modal' + (o.wide ? ' wide' : ''), role: 'dialog', 'aria-modal': 'true', 'aria-label': o.title },
+      h('div', { class: 'modal-head' }, h('h2', null, o.title), h('button', { class: 'icon-btn', 'aria-label': '关闭', onclick: close }, icon('x'))),
+      h('div', { class: 'modal-body' }, o.body),
+      o.footer ? h('div', { class: 'modal-foot' }, o.footer) : null));
+  document.addEventListener('keydown', onKey);
+  $('#modalRoot').append(overlay);
+  return { close, el: overlay };
+}
+function errorBox(err, title) {
+  const msg = typeof err === 'string' ? err : (err && err.message) || String(err);
+  const stack = err && err.stack ? String(err.stack).split('\n').slice(1, 4).join('\n') : '';
+  return h('div', { class: 'err' }, icon('alert', 15), h('div', { class: 'grow' }, title ? h('b', null, title + '：') : null, msg, stack ? h('pre', null, stack) : null));
+}
+function emptyState(iconName, title, text, actions) {
+  return h('div', { class: 'empty' }, icon(iconName, 30), h('h3', null, title), text ? h('p', null, text) : null, actions ? h('div', { class: 'head-actions' }, actions) : null);
+}
+function loadingBox(text) { return h('div', { class: 'loading' }, h('span', { class: 'spin' }), text); }
+function metricTiles(ms, onCard) {
+  return h('div', { class: 'tiles' + (onCard ? ' on-card' : '') }, ms.filter(Boolean).map((m) => {
+    const isN = typeof m.value === 'number';
+    const shown = isN ? fmtNum(m.value, m.digits) : m.value == null || m.value === '' ? '—' : String(m.value);
+    const showUnit = m.unit && shown !== '—';
+    return h('div', { class: 'tile', title: m.hint || '' },
+      h('div', { class: 'label' }, m.label),
+      h('div', { class: 'value' }, shown, showUnit ? h('span', { class: 'unit' }, m.unit) : null),
+      m.hint ? h('div', { class: 'hint' }, m.hint) : null);
+  }));
+}
+function cmpValues(a, b) {
+  const an = a == null || (typeof a === 'number' && Number.isNaN(a)), bn = b == null || (typeof b === 'number' && Number.isNaN(b));
+  if (an || bn) return an && bn ? 0 : an ? 1 : -1;
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  return String(a).localeCompare(String(b), 'zh-CN', { numeric: true });
+}
+/** 可排序表格。cols: [{key, label, num, render(row), value(row)}] */
+function sortableTable(cols, rows, opts) {
+  opts = opts || {};
+  let sortKey = opts.sortKey || null, dir = opts.sortDir || 1;
+  const wrap = h('div', { class: 'tbl-wrap', style: opts.maxHeight ? { maxHeight: opts.maxHeight } : null });
+  const draw = () => {
+    let rs = rows.slice();
+    if (sortKey) {
+      const c = cols.find((x) => x.key === sortKey);
+      const val = (c && c.value) || ((r) => r[sortKey]);
+      rs.sort((a, b) => {
+        const va = val(a), vb = val(b);
+        const nullA = va == null || (typeof va === 'number' && Number.isNaN(va)), nullB = vb == null || (typeof vb === 'number' && Number.isNaN(vb));
+        if (nullA || nullB) return nullA && nullB ? 0 : nullA ? 1 : -1;
+        return cmpValues(va, vb) * dir;
+      });
+    }
+    const max = opts.maxRows || 1000;
+    const table = h('table', { class: 'grid-table' },
+      h('thead', null, h('tr', null, cols.map((c) => h('th', {
+        class: (c.num ? 'num ' : '') + 'sortable' + (sortKey === c.key ? ' sorted' : ''),
+        onclick: () => { if (sortKey === c.key) dir = -dir; else { sortKey = c.key; dir = c.num ? -1 : 1; } draw(); },
+      }, c.label, sortKey === c.key ? (dir > 0 ? ' ↑' : ' ↓') : '')))),
+      h('tbody', null, rs.slice(0, max).map((r) => h('tr', { class: opts.onRowClick ? 'clickable' : '', onclick: opts.onRowClick ? () => opts.onRowClick(r) : null },
+        cols.map((c) => h('td', { class: c.num ? 'num' : '' }, c.render ? c.render(r) : fmtCell(r[c.key])))))));
+    wrap.textContent = '';
+    wrap.append(table);
+    if (rs.length > max) wrap.append(h('div', { class: 'muted small', style: { padding: '8px 12px' } }, '仅显示前 ' + max + ' 行（共 ' + rs.length + ' 行）'));
+  };
+  draw();
+  return wrap;
+}
+function downloadText(name, text, mime) {
+  const isCsv = !mime || mime.startsWith('text/csv');
+  const blob = new Blob([isCsv ? '﻿' + text : text], { type: mime || 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = h('a', { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+function rowsToCSV(header, rows) {
+  const q = (v) => {
+    if (v == null) return '';
+    if (typeof v === 'number') return Number.isFinite(v) ? String(v) : '';
+    const s = String(v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  return [header.map(q).join(','), ...rows.map((r) => r.map(q).join(','))].join('\r\n');
+}
+function pluginDot(p, withName) {
+  return withName
+    ? h('span', { class: 'chip static', style: { '--c': pluginColor(p) } }, h('span', { class: 'dot' }), p.name)
+    : h('span', { class: 'dot', style: { '--c': pluginColor(p) }, title: p.name });
+}
+function crumbs(segs, lastClickable) {
+  const el = h('div', { class: 'crumbs' });
+  el.append(h('button', { onclick: () => openOverview('') }, state.rootName || '根目录'));
+  segs.forEach((s, i) => {
+    el.append(h('span', null, '/'));
+    if (i < segs.length - 1 || lastClickable) el.append(h('button', { onclick: () => openOverview(segs.slice(0, i + 1).join('/')) }, s));
+    else el.append(h('span', { style: { color: 'var(--text-2)', padding: '0 3px' } }, s));
+  });
+  return el;
+}
+
+/* =====================================================================
+ * 顶栏 / 侧边栏
+ * ===================================================================== */
+function updateRootLabel() {
+  const el = $('#rootLabel');
+  el.textContent = '';
+  if (!state.rootName) return;
+  el.append(h('span', { class: 'root-pill', title: state.rootName }, icon('folder', 14), h('b', null, state.rootName), h('span', null, '· ' + state.entries.length + ' 个 CSV')));
+  $('#btnOpen').replaceChildren(icon('folder', 15), h('span', { class: 'hide-sm' }, '切换目录'));
+}
+function updatePluginButton() {
+  $('#btnPlugins').replaceChildren(icon('plug', 15), h('span', { class: 'hide-sm' }, '插件'), h('span', { class: 'count' }, Plugins.list.length));
+}
+function updateThemeButton() {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  $('#btnTheme').replaceChildren(icon(dark ? 'sun' : 'moon', 17));
+}
+function setTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+  try { localStorage.setItem('csvlens.theme', t); } catch (e) { /* blocked */ }
+  updateThemeButton();
+  renderMain({ keepScroll: true });
+}
+
+function renderSidebar() {
+  renderFilterChips();
+  renderTree();
+  renderCompareBar();
+  renderScan();
+}
+function renderScan() {
+  const box = $('#scanBox');
+  if (!state.scanning) { box.hidden = true; return; }
+  box.hidden = false;
+  const pct = state.entries.length ? (state.scanDone / state.entries.length) * 100 : 0;
+  box.replaceChildren(
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } }, h('span', { class: 'spin' }), '读取表头 ' + state.scanDone + ' / ' + state.entries.length),
+    h('div', { class: 'progress' }, h('i', { style: { width: pct + '%' } })));
+}
+function renderFilterChips() {
+  const box = $('#filterChips');
+  box.textContent = '';
+  if (!state.entries.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const counts = new Map();
+  let none = 0;
+  for (const e of state.entries) {
+    if (!e.matches || !e.matches.length) { if (e.columns) none++; continue; }
+    for (const id of e.matches) counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  const chip = (key, label, n, p) => h('button', {
+    class: 'chip' + (state.filter === key ? ' on' : ''),
+    style: p ? { '--c': pluginColor(p) } : null,
+    onclick: () => { state.filter = state.filter === key ? null : key; renderTree(); renderFilterChips(); },
+  }, p ? h('span', { class: 'dot' }) : null, label, h('span', { class: 'n' }, n));
+  box.append(chip(null, '全部', state.entries.length));
+  for (const p of Plugins.sorted()) if (counts.get(p.id)) box.append(chip(p.id, p.name, counts.get(p.id), p));
+  if (none && none < state.entries.length) box.append(chip('__none__', '未匹配', none));
+}
+function fileVisible(e) {
+  if (state.filter === '__none__') { if (e.matches && e.matches.length) return false; }
+  else if (state.filter && !(e.matches || []).includes(state.filter)) return false;
+  if (state.search) {
+    const q = state.search.toLowerCase();
+    if (!e.path.toLowerCase().includes(q) && !(e.columns || []).some((c) => c.toLowerCase().includes(q))) return false;
+  }
+  return true;
+}
+function renderTree() {
+  const host = $('#tree');
+  host.textContent = '';
+  host.classList.toggle('selecting', state.selected.length > 0);
+  if (!state.entries.length) {
+    host.append(h('div', { class: 'tree-empty' }, icon('folder', 28), '还没有打开目录', h('button', { class: 'btn sm', onclick: openFolder }, '选择根目录')));
+    state.visibleFiles = [];
+    return;
+  }
+  const vis = new Map();
+  const count = (node) => {
+    let c = 0;
+    for (const d of node.dirs.values()) c += count(d);
+    for (const f of node.files) if (fileVisible(f)) c++;
+    vis.set(node, c);
+    return c;
+  };
+  count(state.tree);
+  const visible = [];
+  const frag = document.createDocumentFragment();
+  frag.append(folderRow(state.tree, 0, vis.get(state.tree), true, true));
+  const cmp = (a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true });
+  const walk = (node, depth, shown) => {
+    for (const d of [...node.dirs.values()].sort(cmp)) {
+      if (!vis.get(d)) continue;
+      const open = !state.collapsed.has(d.path);
+      if (shown) frag.append(folderRow(d, depth, vis.get(d), open, false));
+      walk(d, depth + 1, shown && open);
+    }
+    for (const f of node.files) {
+      if (!fileVisible(f)) continue;
+      visible.push(f);
+      if (shown) frag.append(fileRow(f, depth));
+    }
+  };
+  walk(state.tree, 1, true);
+  host.append(frag);
+  state.visibleFiles = visible;
+  if (!visible.length) host.append(h('div', { class: 'tree-empty' }, '没有符合条件的文件'));
+  updateTreeActive();
+}
+function folderRow(node, depth, n, open, isRoot) {
+  const toggle = (ev) => {
+    ev.stopPropagation();
+    if (state.collapsed.has(node.path)) state.collapsed.delete(node.path); else state.collapsed.add(node.path);
+    renderTree();
+  };
+  return h('div', {
+    class: 'tree-row folder' + (open && !isRoot ? ' open' : ''), style: { '--depth': depth }, dataset: { scope: node.path },
+    title: isRoot ? '根目录概览' : node.path + '（点击查看目录概览）',
+    onclick: () => { if (!isRoot && state.collapsed.has(node.path)) state.collapsed.delete(node.path); openOverview(node.path); },
+  },
+  isRoot ? h('span', { class: 'chev' }, icon('layers', 14)) : h('span', { class: 'chev', onclick: toggle }, icon('chevron', 14)),
+  isRoot ? null : icon('folder', 15, 'f'),
+  h('span', { class: 'name' }, isRoot ? (node.name || '根目录') : node.name),
+  h('span', { class: 'meta' }, n));
+}
+function fileRow(e, depth) {
+  const checked = state.selected.includes(e.id);
+  const dots = h('span', { class: 'dots' }, pluginsFor(e).map((p) => pluginDot(p)));
+  return h('div', {
+    class: 'tree-row file' + (e.error ? ' error' : ''), style: { '--depth': depth }, dataset: { id: e.id },
+    title: e.path + (e.error ? '\n读取失败：' + e.error : ''),
+    onclick: () => openFile(e.id),
+  },
+  h('input', {
+    type: 'checkbox', checked, title: '加入对比', 'aria-label': '加入对比',
+    onclick: (ev) => { ev.stopPropagation(); toggleSelect(e.id); },
+  }),
+  icon('file', 15, 'file'),
+  h('span', { class: 'name' }, e.name),
+  dots,
+  h('span', { class: 'meta' }, fmtBytes(e.size)));
+}
+function updateTreeActive() {
+  const v = state.view;
+  for (const row of document.querySelectorAll('#tree .tree-row')) {
+    const on = row.dataset.id ? v.kind === 'file' && String(v.id) === row.dataset.id
+      : row.dataset.scope !== undefined ? v.kind === 'overview' && (v.scope || '') === row.dataset.scope : false;
+    row.classList.toggle('active', on);
+  }
+}
+function renderCompareBar() {
+  const bar = $('#compareBar');
+  if (!state.selected.length) { bar.hidden = true; return; }
+  bar.hidden = false;
+  bar.replaceChildren(
+    icon('compare', 15),
+    h('span', { class: 'grow' }, '已选 ' + state.selected.length + ' 个文件'),
+    h('button', { class: 'btn sm', disabled: state.selected.length < 2, onclick: openCompare }, '对比'),
+    h('button', { class: 'btn sm subtle', onclick: () => { state.selected = []; state.selColor.clear(); renderTree(); renderCompareBar(); if (state.view.kind === 'compare') renderMain(); } }, '清除'));
+}
+function toggleSelect(id) {
+  const i = state.selected.indexOf(id);
+  if (i >= 0) { state.selected.splice(i, 1); state.selColor.delete(id); }
+  else {
+    if (state.selected.length >= MAX_COMPARE) { toast('最多同时对比 ' + MAX_COMPARE + ' 个文件', 'error'); renderTree(); return; }
+    state.selected.push(id);
+    const used = new Set(state.selColor.values());
+    let slot = 0;
+    while (used.has(slot)) slot++;
+    state.selColor.set(id, slot);
+  }
+  renderTree();
+  renderCompareBar();
+  if (state.view.kind === 'compare') renderMain();
+  else if (state.view.kind === 'file' && state.view.id === id) {
+    const btn = $('#btnCompareToggle');
+    if (btn) btn.replaceChildren(icon('compare', 15), state.selected.includes(id) ? '已加入对比' : '加入对比');
+  }
+}
+
+/* =====================================================================
+ * 导航
+ * ===================================================================== */
+function closeSidebarMobile() { $('#sidebar').classList.remove('open'); }
+function openOverview(scope) {
+  state.view = { kind: 'overview', scope: scope || '' };
+  closeSidebarMobile();
+  renderMain();
+}
+function openFile(id) {
+  const e = state.byId.get(id);
+  if (!e) return;
+  state.view = { kind: 'file', id };
+  let changed = false;
+  if (e.dir) {
+    const segs = e.dir.split('/');
+    for (let i = 1; i <= segs.length; i++) { const p = segs.slice(0, i).join('/'); if (state.collapsed.delete(p)) changed = true; }
+  }
+  if (changed) renderTree();
+  closeSidebarMobile();
+  renderMain();
+  const row = document.querySelector('#tree .tree-row[data-id="' + id + '"]');
+  if (row) row.scrollIntoView({ block: 'nearest' });
+}
+function openCompare() {
+  state.view = { kind: 'compare' };
+  closeSidebarMobile();
+  renderMain();
+}
+function stepFile(d) {
+  const list = state.visibleFiles;
+  if (!list.length) return;
+  const cur = state.view.kind === 'file' ? list.findIndex((e) => e.id === state.view.id) : -1;
+  const next = cur < 0 ? (d > 0 ? 0 : list.length - 1) : cur + d;
+  if (next >= 0 && next < list.length) openFile(list[next].id);
+}
+
+/* =====================================================================
+ * 主区域
+ * ===================================================================== */
+function viewKey(v) { return v.kind + ':' + (v.id || v.scope || ''); }
+function renderMain(opts) {
+  opts = opts || {};
+  const main = $('#main');
+  const key = viewKey(state.view);
+  const keep = opts.keepScroll && key === lastViewKey ? main.scrollTop : 0;
+  lastViewKey = key;
+  renderSeq++;
+  Charts.disposeIn(null);
+  main.textContent = '';
+  const v = state.view;
+  let r;
+  if (!state.entries.length) r = renderWelcome(main);
+  else if (v.kind === 'file') r = renderFileView(main, state.byId.get(v.id));
+  else if (v.kind === 'compare') r = renderCompare(main);
+  else r = renderOverview(main, v.scope || '');
+  const seq = renderSeq;
+  Promise.resolve(r).then(() => { if (keep && seq === renderSeq) main.scrollTop = keep; }, (err) => { console.error(err); main.append(h('div', { class: 'page' }, errorBox(err, '渲染出错'))); });
+  updateTreeActive();
+}
+
+/* ---------- 欢迎页 ---------- */
+const SAMPLE_PLUGIN = `CSVViewer.registerPlugin({
+  id: 'ranging',
+  name: '测距分析',
+  // 含这些列（不区分大小写）的 CSV 自动套用此插件
+  match: { columns: ['ts', 'dis', 'dissm', 'rssi'] },
+
+  // 衍生特征：新列会加入表格，可绘图、可导出
+  features: [
+    { name: 'dis_resid', compute: (t) => t.map(['dis', 'dissm'], (a, b) => a - b) },
+  ],
+
+  // 子图：x 相同的图自动联动缩放与悬停
+  charts: () => [
+    { title: 'dis vs ts',   type: 'line', x: 'ts', y: 'dis' },
+    { title: 'dissm vs ts', type: 'line', x: 'ts', y: 'dissm' },
+    { title: 'rssi vs ts',  type: 'line', x: 'ts', y: 'rssi' },
+  ],
+});`;
+function renderWelcome(main) {
+  const page = h('div', { class: 'page welcome' });
+  main.append(page);
+  page.append(
+    h('div', { class: 'hero' },
+      h('h1', null, '把一个根目录交给它，所有 CSV 一目了然'),
+      h('p', null, '递归扫描目录及子目录中的全部 CSV，按表结构分组；插件按列名识别特定种类的 CSV，自动计算衍生特征、绘制专属子图，还能跨文件批量汇总。')),
+    h('div', { class: 'drop', onclick: openFolder, role: 'button', tabindex: '0', onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openFolder(); } } },
+      h('div', { class: 'drop-icon' }, icon('folder', 28)),
+      h('div', { class: 'drop-title' }, '选择或拖入一个根目录'),
+      h('div', { class: 'drop-sub' }, '支持 .csv / .tsv，自动识别分隔符与编码（UTF-8 / GBK）。数据只在本地浏览器中处理，不会上传。仓库自带 samples/ 示例目录，可以直接选它试用。'),
+      h('div', { class: 'drop-actions' },
+        h('button', { class: 'btn', onclick: (ev) => { ev.stopPropagation(); openFolder(); } }, icon('folder', 15), '选择根目录'),
+        h('button', { class: 'btn ghost', onclick: (ev) => { ev.stopPropagation(); openPluginManager(); } }, icon('plug', 15), '管理插件'))),
+    h('div', { class: 'features' },
+      feature('layers', '递归扫描', '读取每个文件的表头，统计列分布、按表结构分组；侧栏可按文件名、路径或列名搜索。'),
+      feature('plug', '插件分析', '插件按列名匹配特定种类的 CSV：计算衍生特征和指标、画出专属子图，参数可在页面上调整。'),
+      feature('compare', '批量与对比', '插件可把每个文件汇总成一行做跨文件分析；也可以勾选多个文件叠加对比任意一列。')),
+    h('div', { class: 'two-col' },
+      h('div', { class: 'card' },
+        h('div', { class: 'card-head' }, icon('code', 16), h('div', { class: 'card-title' }, '插件长这样'), h('div', { class: 'grow' }), h('span', { class: 'card-sub' }, 'plugins/ranging.js')),
+        h('pre', { class: 'code', html: highlight(SAMPLE_PLUGIN) })),
+      h('div', { class: 'card' },
+        h('div', { class: 'card-head' }, icon('plug', 16), h('div', { class: 'card-title' }, '已加载插件'), h('div', { class: 'grow' }), h('button', { class: 'btn sm ghost', onclick: openPluginManager }, '管理')),
+        Plugins.list.length
+          ? h('div', { class: 'plist' }, Plugins.sorted().map((p) => h('div', { class: 'prow' },
+              h('span', { class: 'picon', style: { '--c': pluginColor(p) } }, icon('plug', 15)),
+              h('div', { class: 'grow' }, h('div', { class: 'pname' }, p.name, p.fallback ? h('span', { class: 'muted small' }, '  兜底') : null), h('div', { class: 'pdesc' }, matchSummary(p))))))
+          : h('div', { class: 'card-body muted' }, '暂无插件。'))),
+    h('p', { class: 'muted small', style: { marginTop: '18px' } }, '快捷键：', h('span', { class: 'kbd' }, 'J'), ' / ', h('span', { class: 'kbd' }, 'K'), ' 下一个 / 上一个文件，', h('span', { class: 'kbd' }, '/'), ' 搜索。'));
+}
+function feature(ic, title, text) {
+  return h('div', { class: 'card feature' }, h('div', { class: 'fi' }, icon(ic, 17)), h('h3', null, title), h('p', null, text));
+}
+
+/* ---------- 目录概览 ---------- */
+function renderOverview(main, scope) {
+  const files = scopeFiles(scope);
+  const page = h('div', { class: 'page' });
+  main.append(page);
+  const segs = scope ? scope.split('/') : [];
+  page.append(h('div', { class: 'page-head' },
+    h('div', { class: 'grow' },
+      segs.length ? crumbs(segs, false) : null,
+      h('h1', { class: 'title' }, segs.length ? segs[segs.length - 1] : state.rootName),
+      h('div', { class: 'subtitle' }, segs.length ? '子目录概览' : '根目录概览')),
+    h('div', { class: 'head-actions' },
+      h('button', { class: 'btn ghost', onclick: rescan, title: state.dirHandle ? '重新读取目录内容' : '重新选择目录' }, icon('refresh', 15), '重新扫描'))));
+  const stack = h('div', { class: 'stack' });
+  page.append(stack);
+  if (!files.length) { stack.append(h('div', { class: 'card' }, emptyState('folder', '此目录下没有 CSV'))); return; }
+
+  const dirs = new Set(files.map((e) => e.dir).filter((d) => d !== scope));
+  const schemas = groupSchemas(files);
+  const size = files.reduce((s, e) => s + e.size, 0);
+  const rows = files.reduce((s, e) => s + (e.rows || 0), 0);
+  const inexact = files.some((e) => !e.rowsExact);
+  const matched = files.filter((e) => e.matches && e.matches.length).length;
+  stack.append(metricTiles([
+    { label: 'CSV 文件', value: files.length },
+    { label: '总大小', value: fmtBytes(size) },
+    { label: '含 CSV 的子目录', value: dirs.size },
+    { label: '表结构', value: state.scanning ? null : schemas.length, hint: '列名集合相同视为同一结构' },
+    { label: inexact ? '总行数（估算）' : '总行数', value: state.scanning ? null : (inexact ? '≈ ' : '') + fmtNum(rows) },
+    { label: '被插件识别', value: state.scanning ? null : matched + ' / ' + files.length },
+  ]));
+  if (state.scanning) stack.append(h('div', { class: 'card' }, h('div', { class: 'card-body' }, loadingBox('正在读取表头（' + state.scanDone + ' / ' + state.entries.length + '）…'))));
+
+  stack.append(pluginOverviewCard(files, scope));
+  for (const p of Plugins.sorted()) {
+    const job = state.batches.get(p.id + '|' + scope);
+    if (job) stack.append(batchCard(job, p));
+  }
+  if (!state.scanning) {
+    stack.append(schemaCard(schemas));
+    if (files.length > 1) stack.append(columnFreqCard(files));
+  }
+  stack.append(filesCard(files));
+}
+function groupSchemas(files) {
+  const m = new Map();
+  for (const e of files) {
+    if (!e.columns) continue;
+    const k = schemaKey(e);
+    if (!m.has(k)) m.set(k, { columns: e.columns, files: [] });
+    m.get(k).files.push(e);
+  }
+  return [...m.values()].sort((a, b) => b.files.length - a.files.length);
+}
+function pluginOverviewCard(files, scope) {
+  const card = h('div', { class: 'card' });
+  card.append(h('div', { class: 'card-head' }, icon('plug', 16), h('div', { class: 'card-title' }, '插件'),
+    h('div', { class: 'card-sub' }, '按表头自动匹配 · 有批量分析的插件可对匹配文件逐个运行并汇总'),
+    h('div', { class: 'grow' }), h('button', { class: 'btn sm ghost', onclick: openPluginManager }, '管理插件')));
+  const list = h('div', { class: 'plist' });
+  const plugins = Plugins.sorted();
+  if (!plugins.length) list.append(h('div', { class: 'card-body muted' }, '暂无插件。'));
+  for (const p of plugins) {
+    const enabled = Plugins.isEnabled(p.id);
+    const n = files.filter((e) => (e.matches || []).includes(p.id)).length;
+    const job = state.batches.get(p.id + '|' + scope);
+    list.append(h('div', { class: 'prow', style: enabled ? null : { opacity: 0.55 } },
+      h('span', { class: 'picon', style: { '--c': pluginColor(p) } }, icon('plug', 15)),
+      h('div', { class: 'grow' },
+        h('div', { class: 'pname' }, p.name, p.fallback ? h('span', { class: 'muted small' }, '  兜底') : null, enabled ? null : h('span', { class: 'muted small' }, '  已停用')),
+        h('div', { class: 'pdesc' }, p.description || matchSummary(p))),
+      h('span', { class: 'pcount' }, state.scanning ? '…' : '匹配 ' + n + ' 个文件'),
+      n && enabled ? h('button', { class: 'btn sm ghost', onclick: () => { state.filter = p.id; renderFilterChips(); renderTree(); $('#sidebar').classList.add('open'); } }, '筛选') : null,
+      n && enabled && typeof p.summarize === 'function'
+        ? h('button', { class: 'btn sm', disabled: !!(job && job.status === 'running'), onclick: () => runBatch(p, scope) }, icon('sparkles', 14), job ? '重新批量分析' : '批量分析')
+        : null));
+  }
+  card.append(list);
+  return card;
+}
+function schemaCard(schemas) {
+  const card = h('div', { class: 'card' });
+  card.append(h('div', { class: 'card-head' }, icon('grid', 16), h('div', { class: 'card-title' }, '表结构'), h('div', { class: 'card-sub' }, schemas.length + ' 种 · 点击打开该结构的第一个文件')));
+  const body = h('div');
+  const draw = (all) => {
+    body.textContent = '';
+    for (const s of all ? schemas : schemas.slice(0, 8)) {
+      const first = s.files[0];
+      const shownCols = s.columns.slice(0, 18);
+      body.append(h('div', { class: 'schema', onclick: () => openFile(first.id), title: s.files.map((f) => f.path).slice(0, 20).join('\n') },
+        h('div', { class: 'cnt' }, s.files.length, h('small', null, '个文件')),
+        h('div', { class: 'grow' },
+          h('div', null, shownCols.map((c) => h('span', { class: 'colchip' }, c)), s.columns.length > shownCols.length ? h('span', { class: 'muted small' }, ' +' + (s.columns.length - shownCols.length) + ' 列') : null),
+          h('div', { class: 'muted small', style: { marginTop: '4px', display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' } },
+            pluginsFor(first).map((p) => pluginDot(p, true)),
+            h('span', null, first.path + (s.files.length > 1 ? ' 等' : ''))))));
+    }
+    if (!all && schemas.length > 8) body.append(h('div', { style: { padding: '10px 18px', borderTop: '1px solid var(--border)' } }, h('button', { class: 'btn sm subtle', onclick: () => draw(true) }, '显示全部 ' + schemas.length + ' 种')));
+  };
+  draw(false);
+  card.append(body);
+  return card;
+}
+function columnFreqCard(files) {
+  const m = new Map();
+  for (const e of files) for (const c of e.columns || []) {
+    const k = c.trim().toLowerCase();
+    if (!m.has(k)) m.set(k, { name: c, n: 0 });
+    m.get(k).n++;
+  }
+  const top = [...m.values()].sort((a, b) => b.n - a.n).slice(0, 20);
+  const spec = {
+    title: '', type: 'bar', horizontal: true, labels: true, span: 2,
+    x: top.map((t) => t.name), y: top.map((t) => t.n),
+    height: Math.max(160, top.length * 24 + 40),
+    xLabel: '', option: { toolbox: { show: false }, tooltip: { formatter: (p) => '<b>' + p.value[0] + '</b> 个文件含 ' + esc(p.value[1]) } },
+  };
+  const card = h('div', { class: 'card' });
+  card.append(h('div', { class: 'card-head' }, icon('chart', 16), h('div', { class: 'card-title' }, '列出现频率'), h('div', { class: 'card-sub' }, '前 ' + top.length + ' 个列名（不区分大小写）· 共 ' + m.size + ' 个不同列名')));
+  const host = h('div', { class: 'chart', style: { height: spec.height + 'px' } });
+  card.append(h('div', { class: 'card-body', style: { paddingTop: '6px' } }, host));
+  mountChart(host, () => specToOption(spec, null, themeTokens()), null);
+  return card;
+}
+function filesCard(files) {
+  const card = h('div', { class: 'card' });
+  card.append(h('div', { class: 'card-head' }, icon('file', 16), h('div', { class: 'card-title' }, '文件'), h('div', { class: 'card-sub' }, files.length + ' 个 · 点击表头排序，点击行打开')));
+  const cols = [
+    { key: 'name', label: '文件', render: (e) => h('div', null, h('div', { class: 'nm' }, e.name), e.dir ? h('div', { class: 'path' }, e.dir) : null), value: (e) => e.path },
+    { key: 'size', label: '大小', num: true, render: (e) => fmtBytes(e.size) },
+    { key: 'rows', label: '行数', num: true, render: (e) => (e.rows == null ? '—' : (e.rowsExact ? '' : '≈ ') + fmtNum(e.rows)) },
+    { key: 'cols', label: '列数', num: true, value: (e) => (e.columns ? e.columns.length : null), render: (e) => (e.columns ? e.columns.length : '—') },
+    { key: 'plugins', label: '插件', value: (e) => pluginsFor(e).map((p) => p.name).join(','), render: (e) => (e.error ? h('span', { style: { color: 'var(--critical)' } }, '读取失败') : h('div', { class: 'chips' }, pluginsFor(e).map((p) => pluginDot(p, true)))) },
+    { key: 'mtime', label: '修改时间', num: true, render: (e) => (e.mtime ? fmtDate(e.mtime, false) : '—') },
+  ];
+  card.append(h('div', { class: 'card-body flush' }, sortableTable(cols, files, { onRowClick: (e) => openFile(e.id), maxHeight: '520px', maxRows: 2000 })));
+  return card;
+}
+
+/* ---------- 批量分析 ---------- */
+function shortLabels(rows) {
+  const parts = rows.map((r) => r.path.replace(/\.(csv|tsv)$/i, '').split('/'));
+  rows.forEach((r, i) => {
+    let k = 1;
+    for (;;) {
+      const label = parts[i].slice(-k).join('/');
+      const clash = parts.some((p, j) => j !== i && p.slice(-k).join('/') === label);
+      if (!clash || k >= parts[i].length) { r.file = label; break; }
+      k++;
+    }
+  });
+}
+async function runBatch(p, scope) {
+  const files = scopeFiles(scope).filter((e) => (e.matches || []).includes(p.id));
+  const key = p.id + '|' + scope;
+  const job = { key, pluginId: p.id, scope, total: files.length, done: 0, rows: [], errors: [], status: 'running', cancel: false, t0: performance.now(), onProgress: null };
+  state.batches.set(key, job);
+  renderMain({ keepScroll: true });
+  const order = new Map(files.map((e, i) => [e.id, i]));
+  let i = 0;
+  const work = async () => {
+    while (i < files.length && !job.cancel) {
+      const e = files[i++];
+      try {
+        const t = await getTable(e);
+        applyFeatures(t, e, pluginsFor(e));
+        const r = p.summarize(t, makeCtx(p, t, e)) || {};
+        job.rows.push(Object.assign({ file: e.name, path: e.path }, r, { path: e.path, __id: e.id, __order: order.get(e.id) }));
+      } catch (err) {
+        job.errors.push({ path: e.path, message: (err && err.message) || String(err) });
+      }
+      job.done++;
+      if (job.onProgress) job.onProgress();
+    }
+  };
+  await Promise.all([work(), work()]);
+  job.rows.sort((a, b) => a.__order - b.__order);
+  shortLabels(job.rows);
+  job.status = job.cancel ? 'cancelled' : 'done';
+  job.ms = performance.now() - job.t0;
+  if (state.batches.get(key) === job && state.view.kind === 'overview' && (state.view.scope || '') === scope) renderMain({ keepScroll: true });
+}
+function batchCard(job, p) {
+  const card = h('div', { class: 'card', style: { '--c': pluginColor(p) } });
+  card.append(h('div', { class: 'card-head' },
+    h('span', { class: 'picon' }, icon('sparkles', 15)),
+    h('div', null, h('div', { class: 'card-title' }, '批量分析 · ' + p.name), h('div', { class: 'card-sub' }, job.scope ? '范围：' + job.scope : '范围：根目录')),
+    h('div', { class: 'grow' }),
+    h('button', { class: 'icon-btn sm', title: '关闭结果', 'aria-label': '关闭结果', onclick: () => { job.cancel = true; state.batches.delete(job.key); renderMain({ keepScroll: true }); } }, icon('x', 14))));
+  if (job.status === 'running') {
+    const label = h('span', null);
+    const bar = h('i');
+    const update = () => {
+      label.textContent = '正在分析 ' + job.done + ' / ' + job.total + ' 个文件…';
+      bar.style.width = (job.total ? (job.done / job.total) * 100 : 0) + '%';
+    };
+    job.onProgress = update;
+    update();
+    card.append(h('div', { class: 'card-body', style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } }, h('span', { class: 'spin' }), label, h('div', { class: 'grow' }),
+        h('button', { class: 'btn sm ghost', onclick: () => { job.cancel = true; } }, '取消')),
+      h('div', { class: 'progress' }, bar)));
+    return card;
+  }
+  const keys = [];
+  const seen = new Set();
+  for (const r of job.rows) for (const k in r) if (!k.startsWith('__') && !seen.has(k)) { seen.add(k); keys.push(k); }
+  const label = { file: '文件', path: '路径' };
+  const cols = keys.filter((k) => k !== 'path').map((k) => ({
+    key: k,
+    label: label[k] || k,
+    num: k !== 'file' && job.rows.some((r) => typeof r[k] === 'number'),
+    render: k === 'file' ? (r) => h('span', { class: 'nm', title: r.path }, r.file) : undefined,
+  }));
+  const head = h('div', { class: 'batch-head' },
+    icon('check', 15),
+    h('span', null, (job.status === 'cancelled' ? '已取消：' : '完成：') + job.rows.length + ' 个文件 · 用时 ' + fmtDuration(job.ms)),
+    job.errors.length ? h('span', { style: { color: 'var(--critical)' } }, job.errors.length + ' 个失败') : null,
+    h('div', { class: 'grow' }),
+    h('button', { class: 'btn sm ghost', onclick: () => downloadText(p.id + '_summary.csv', rowsToCSV(keys.map((k) => label[k] || k), job.rows.map((r) => keys.map((k) => r[k])))) }, icon('download', 14), '导出汇总 CSV'),
+    h('button', { class: 'btn sm ghost', onclick: () => runBatch(p, job.scope) }, icon('refresh', 14), '重新运行'));
+  const body = h('div', { class: 'batch-body' });
+  if (typeof p.aggregate === 'function' && job.rows.length) {
+    const st = DataTable.fromRows(job.rows, { name: p.id + '_summary', path: '' });
+    try {
+      const res = p.aggregate(st, makeCtx(p, st, null)) || {};
+      if (res.metrics && res.metrics.length) body.append(metricTiles(res.metrics, true));
+      if (res.charts && res.charts.length) {
+        body.append(chartGrid(res.charts.filter(Boolean).map((s) => (s.horizontal && !s.height ? Object.assign({}, s, { height: Math.max(180, st.rowCount * 26 + 50) }) : s)), st));
+      }
+    } catch (err) { body.append(errorBox(err, 'aggregate()')); }
+  }
+  body.append(h('div', { style: { border: '1px solid var(--border)', borderRadius: '10px', overflow: 'hidden' } },
+    sortableTable(cols, job.rows, { onRowClick: (r) => openFile(r.__id), maxHeight: '420px' })));
+  if (job.errors.length) {
+    body.append(h('details', { class: 'errors' }, h('summary', null, job.errors.length + ' 个文件分析失败'),
+      h('ul', null, job.errors.map((x) => h('li', null, x.path + '：' + x.message)))));
+  }
+  card.append(h('div', { class: 'batch' }, head, body));
+  return card;
+}
+
+/* ---------- 单文件视图 ---------- */
+const TABS = [
+  { id: 'plugins', label: '插件分析', icon: 'plug' },
+  { id: 'columns', label: '列统计', icon: 'grid' },
+  { id: 'data', label: '数据表', icon: 'table' },
+  { id: 'plot', label: '自由绘图', icon: 'chart' },
+];
+async function renderFileView(main, e) {
+  if (!e) { state.view = { kind: 'overview', scope: '' }; return renderMain(); }
+  const seq = renderSeq;
+  const page = h('div', { class: 'page' });
+  main.append(page);
+  const list = state.visibleFiles;
+  const idx = list.findIndex((x) => x.id === e.id);
+  const metaRow = h('div', { class: 'meta-row' });
+  const selected = state.selected.includes(e.id);
+  const exportBtn = h('button', { class: 'btn ghost', disabled: true }, icon('download', 15), h('span', { class: 'hide-sm' }, '导出 CSV'));
+  page.append(h('div', { class: 'page-head' },
+    h('div', { class: 'grow' }, crumbs(e.dir ? e.dir.split('/') : [], true), h('h1', { class: 'title' }, e.name), metaRow),
+    h('div', { class: 'head-actions' },
+      h('button', { class: 'icon-btn', title: '上一个文件（K）', 'aria-label': '上一个文件', disabled: idx <= 0, onclick: () => stepFile(-1) }, icon('left', 17)),
+      h('button', { class: 'icon-btn', title: '下一个文件（J）', 'aria-label': '下一个文件', disabled: idx < 0 || idx >= list.length - 1, onclick: () => stepFile(1) }, icon('chevron', 17)),
+      h('button', { class: 'btn ghost', id: 'btnCompareToggle', onclick: () => toggleSelect(e.id) }, icon('compare', 15), selected ? '已加入对比' : '加入对比'),
+      exportBtn)));
+  fillMeta(metaRow, e, null);
+  const tabsEl = h('div', { class: 'tabs', role: 'tablist' });
+  const body = h('div');
+  page.append(tabsEl, body);
+  body.append(loadingBox('正在解析 ' + e.name + '（' + fmtBytes(e.size) + '）…'));
+  let table;
+  try { table = await getTable(e); }
+  catch (err) {
+    if (seq !== renderSeq) return;
+    body.replaceChildren(errorBox(err, '解析失败'));
+    return;
+  }
+  if (seq !== renderSeq) return;
+  const plugins = pluginsFor(e);
+  const featErrors = applyFeatures(table, e, plugins);
+  fillMeta(metaRow, e, table);
+  const derived = table._cols.filter((c) => c.derived).length;
+  exportBtn.disabled = false;
+  exportBtn.title = derived ? '导出原始列 + ' + derived + ' 个衍生特征' : '导出 CSV';
+  exportBtn.onclick = () => downloadText(e.name.replace(/\.(csv|tsv)$/i, '') + (derived ? '_features' : '') + '.csv', table.toCSV());
+
+  const badges = { plugins: plugins.length, columns: table._cols.length };
+  let current = TABS.some((t) => t.id === state.tab) ? state.tab : 'plugins';
+  const drawTabs = () => {
+    tabsEl.replaceChildren(...TABS.map((t) => h('button', {
+      class: 'tab' + (t.id === current ? ' on' : ''), role: 'tab', 'aria-selected': String(t.id === current),
+      onclick: () => { current = t.id; state.tab = t.id; store.set('tab', t.id); drawTabs(); drawBody(); },
+    }, icon(t.icon, 15), t.label, badges[t.id] != null ? h('span', { class: 'badge' }, badges[t.id]) : null)));
+  };
+  const drawBody = () => {
+    Charts.disposeIn(body);
+    body.textContent = '';
+    try {
+      if (current === 'plugins') renderPluginsTab(body, table, e, plugins, featErrors);
+      else if (current === 'columns') renderColumnsTab(body, table);
+      else if (current === 'data') renderDataTab(body, table);
+      else renderPlotTab(body, table, e);
+    } catch (err) { body.append(errorBox(err)); }
+  };
+  drawTabs();
+  drawBody();
+}
+function fillMeta(row, e, t) {
+  const tags = [
+    fmtBytes(e.size),
+    t ? fmtNum(t.rowCount) + ' 行' : e.rows != null ? (e.rowsExact ? '' : '≈ ') + fmtNum(e.rows) + ' 行' : null,
+    (t ? t._cols.filter((c) => !c.derived).length : (e.columns || []).length) + ' 列',
+    e.delimiter ? '分隔符：' + (DELIM_NAMES[e.delimiter] || e.delimiter) : null,
+    (t && t.encoding) || e.encoding || null,
+    t && t.parseMs != null ? '解析 ' + fmtNum(Math.round(t.parseMs)) + ' ms' : null,
+    e.headerless ? '无表头（列名已自动生成）' : null,
+    e.mtime ? '修改于 ' + fmtDate(e.mtime, false) : null,
+  ];
+  row.replaceChildren(...tags.filter(Boolean).map((x) => h('span', { class: 'tag' }, x)), ...pluginsFor(e).map((p) => pluginDot(p, true)));
+}
+
+function renderPluginsTab(body, table, e, plugins, featErrors) {
+  if (!plugins.length) {
+    body.append(h('div', { class: 'card' }, emptyState('plug', '没有插件匹配这个文件',
+      '可以先用「列统计」「自由绘图」查看数据；或者为这类 CSV 写一个插件 —— 下面的按钮会以本文件的列名生成插件模板。',
+      [h('button', { class: 'btn', onclick: () => openPluginEditor(null, pluginTemplate(table)) }, icon('plus', 15), '为此类文件创建插件'),
+        h('button', { class: 'btn ghost', onclick: openPluginManager }, '管理插件')])));
+    return;
+  }
+  body.append(h('div', { class: 'hint-row' }, icon('info', 14),
+    h('span', null, h('span', { class: 'kbd' }, 'Ctrl'), ' + 滚轮缩放 · 拖拽平移 · 右上角工具可框选缩放、还原、导出图片 · 同一插件中 X 轴相同的图联动')));
+  const stack = h('div', { class: 'stack' });
+  for (const p of plugins) stack.append(pluginSection(p, table, e, featErrors.get(p.id) || []));
+  body.append(stack);
+}
+function pluginSection(p, table, e, errs) {
+  const sec = h('section', { class: 'card psec' + (isCollapsed(p) ? ' collapsed' : ''), style: { '--c': pluginColor(p) } });
+  const body = h('div', { class: 'psec-body' });
+  let rendered = false;
+  const renderBody = () => {
+    rendered = true;
+    const ctx = makeCtx(p, table, e);
+    if (p.params.length) body.append(paramsForm(p));
+    const feats = table._cols.filter((c) => c.source === p.id);
+    if (feats.length) {
+      body.append(h('div', { class: 'feat-row' }, h('span', null, '衍生特征'),
+        feats.map((c) => h('span', { class: 'feat', title: c.description || '' }, c.name, c.label ? h('em', null, c.label) : null))));
+    }
+    for (const m of errs) body.append(errorBox(m));
+    if (typeof p.metrics === 'function') {
+      try {
+        const ms = p.metrics(table, ctx);
+        if (ms && ms.length) body.append(metricTiles(ms, true));
+      } catch (err) { body.append(errorBox(err, 'metrics()')); }
+    }
+    if (typeof p.charts === 'function') {
+      try {
+        const specs = (p.charts(table, ctx) || []).filter(Boolean);
+        if (specs.length) body.append(chartGrid(specs, table));
+      } catch (err) { body.append(errorBox(err, 'charts()')); }
+    }
+    if (typeof p.render === 'function') {
+      const host = h('div', { class: 'custom-host' });
+      body.append(host);
+      try { p.render(host, table, ctx); } catch (err) { host.append(errorBox(err, 'render()')); }
+    }
+  };
+  const head = h('div', {
+    class: 'psec-head', role: 'button', tabindex: '0', 'aria-expanded': String(!isCollapsed(p)),
+    onclick: () => toggle(),
+    onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); } },
+  },
+  h('span', { class: 'picon' }, icon('plug', 16)),
+  h('div', { class: 'grow' },
+    h('div', { class: 'psec-name' }, p.name, p.version ? h('span', { class: 'ver' }, 'v' + p.version) : null),
+    p.description ? h('div', { class: 'psec-desc' }, p.description) : null),
+  h('span', { class: 'psec-chev' }, icon('chevron', 16)));
+  function toggle() {
+    const collapsed = !sec.classList.contains('collapsed');
+    sec.classList.toggle('collapsed', collapsed);
+    head.setAttribute('aria-expanded', String(!collapsed));
+    setCollapsed(p, collapsed);
+    if (!collapsed && !rendered) renderBody();
+  }
+  sec.append(head, body);
+  if (!isCollapsed(p)) renderBody();
+  return sec;
+}
+function paramsForm(p) {
+  const vals = getParams(p);
+  const form = h('div', { class: 'params' }, icon('sliders', 15));
+  const set = (key, v) => { setParam(p, key, v); renderMain({ keepScroll: true }); };
+  for (const d of p.params) {
+    let input;
+    const v = vals[d.key];
+    if (d.type === 'select') {
+      input = h('select', { class: 'input', value: v, onchange: (ev) => set(d.key, ev.target.value) },
+        (d.options || []).map((o) => (o && typeof o === 'object' ? h('option', { value: o.value }, o.label != null ? o.label : o.value) : h('option', { value: o }, o))));
+    } else if (d.type === 'checkbox' || d.type === 'boolean') {
+      input = h('input', { type: 'checkbox', checked: !!v, onchange: (ev) => set(d.key, ev.target.checked) });
+    } else if (d.type === 'number') {
+      input = h('input', {
+        class: 'input', type: 'number', value: v, min: d.min, max: d.max, step: d.step || 'any',
+        onchange: (ev) => { const x = parseFloat(ev.target.value); if (Number.isFinite(x)) set(d.key, x); },
+      });
+    } else {
+      input = h('input', { class: 'input', type: 'text', value: v == null ? '' : v, onchange: (ev) => set(d.key, ev.target.value) });
+    }
+    form.append(h('label', { class: 'field', title: d.description || '' }, d.label || d.key, input));
+  }
+  return form;
+}
+
+function sparkHist(hist) {
+  const w = 120, ht = 26, n = hist.length, max = Math.max(1, ...hist), bw = w / n;
+  let s = '<svg width="' + w + '" height="' + ht + '" viewBox="0 0 ' + w + ' ' + ht + '" aria-hidden="true">';
+  for (let i = 0; i < n; i++) {
+    const bh = hist[i] ? Math.max(1.5, (hist[i] / max) * (ht - 2)) : 0;
+    s += '<rect x="' + (i * bw + 0.5).toFixed(1) + '" y="' + (ht - bh).toFixed(1) + '" width="' + Math.max(1, bw - 1.2).toFixed(1) + '" height="' + bh.toFixed(1) + '" rx="1" fill="currentColor"/>';
+  }
+  return s + '</svg>';
+}
+const TYPE_NAMES = { number: '数值', datetime: '时间', string: '文本', empty: '空' };
+function renderColumnsTab(body, table) {
+  const rows = table._cols.map((c) => ({ c, s: table.stats(c.name) }));
+  const fmtV = (c, v) => (c.type === 'datetime' ? fmtDate(v) : fmtNum(v));
+  const cols = [
+    { key: 'name', label: '列名', value: (r) => r.c.name, render: (r) => h('div', null, h('div', { class: 'nm mono' }, r.c.name), r.c.derived ? h('div', { class: 'path' }, (r.c.label || '衍生特征') + (r.c.source ? ' · ' + ((Plugins.byId.get(r.c.source) || {}).name || r.c.source) : '')) : null) },
+    { key: 'type', label: '类型', value: (r) => r.c.type, render: (r) => h('span', null, h('span', { class: 'type-badge ' + r.c.type }, TYPE_NAMES[r.c.type] || r.c.type), r.c.derived ? h('span', { class: 'type-badge derived', style: { marginLeft: '4px' } }, '衍生') : null) },
+    { key: 'count', label: '有效值', num: true, value: (r) => r.s.count, render: (r) => fmtNum(r.s.count) },
+    { key: 'missing', label: '缺失', num: true, value: (r) => r.s.missing, render: (r) => (r.s.missing ? fmtNum(r.s.missing) + ' (' + ((r.s.missing / Math.max(1, table.rowCount)) * 100).toFixed(1) + '%)' : '0') },
+    { key: 'min', label: '最小', num: true, value: (r) => r.s.min, render: (r) => (r.s.kind === 'string' ? '' : fmtV(r.c, r.s.min)) },
+    { key: 'max', label: '最大', num: true, value: (r) => r.s.max, render: (r) => (r.s.kind === 'string' ? '' : fmtV(r.c, r.s.max)) },
+    { key: 'mean', label: '均值', num: true, value: (r) => (r.s.kind === 'number' ? r.s.mean : null), render: (r) => (r.s.kind === 'number' ? fmtNum(r.s.mean) : '') },
+    { key: 'std', label: '标准差', num: true, value: (r) => (r.s.kind === 'number' ? r.s.std : null), render: (r) => (r.s.kind === 'number' ? fmtNum(r.s.std) : '') },
+    {
+      key: 'dist', label: '分布 / 高频值', value: (r) => (r.s.kind === 'string' ? r.s.distinct : null),
+      render: (r) => r.s.kind === 'string'
+        ? h('div', { class: 'top-vals', title: r.s.top.map(([v, n]) => v + '（' + n + '）').join('\n') }, (r.s.capped ? '>' : '') + fmtNum(r.s.distinct) + ' 种 · ', r.s.top.slice(0, 3).map(([v, n]) => v + '（' + n + '）').join('、'))
+        : h('span', { class: 'spark', html: sparkHist(r.s.hist) }),
+    },
+  ];
+  body.append(h('div', { class: 'card' }, h('div', { class: 'card-body flush' }, sortableTable(cols, rows, { maxHeight: '70vh' }))));
+}
+
+function renderDataTab(body, table) {
+  const cols = table._cols, n = Math.min(table.rowCount, MAX_TABLE_ROWS), RH = 28;
+  const textW = (s) => { let w = 0; for (const ch of String(s)) w += ch.charCodeAt(0) > 255 ? 13 : 7.9; return w; };
+  const step = Math.max(1, Math.floor(n / 200));
+  const widths = cols.map((c) => {
+    let w = textW(c.name) + 28;
+    for (let i = 0; i < n; i += step) w = Math.max(w, textW(table.cellText(c, i, true)) + 28);
+    if (n) w = Math.max(w, textW(table.cellText(c, n - 1, true)) + 28);
+    return Math.round(Math.min(280, Math.max(72, w)));
+  });
+  const idxW = Math.max(56, String(n).length * 8 + 24);
+  const isNumCol = (c) => c.type === 'number';
+  const tbl = h('table', { class: 'vt', style: { width: idxW + widths.reduce((a, b) => a + b, 0) + 'px' } },
+    h('colgroup', null, h('col', { style: { width: idxW + 'px' } }), widths.map((w) => h('col', { style: { width: w + 'px' } }))),
+    h('thead', null, h('tr', null, h('th', { class: 'idx' }, '#'), cols.map((c) => h('th', {
+      class: (isNumCol(c) ? 'num' : '') + (c.derived ? ' dv' : ''),
+      title: c.name + ' · ' + (TYPE_NAMES[c.type] || c.type) + (c.derived ? ' · 衍生特征' + (c.description ? '：' + c.description : '') : ''),
+    }, c.name)))));
+  const tbody = h('tbody');
+  tbl.append(tbody);
+  const wrap = h('div', { class: 'vt-wrap' }, tbl);
+  let lastStart = -1, lastEnd = -1, raf = 0;
+  const draw = () => {
+    raf = 0;
+    const top = wrap.scrollTop, vh = wrap.clientHeight || 600;
+    const start = Math.max(0, Math.floor(top / RH) - 12), end = Math.min(n, Math.ceil((top + vh) / RH) + 12);
+    if (start === lastStart && end === lastEnd) return;
+    lastStart = start; lastEnd = end;
+    const frag = document.createDocumentFragment();
+    const pad = (hgt) => { const tr = document.createElement('tr'); tr.className = 'pad'; const td = document.createElement('td'); td.colSpan = cols.length + 1; td.style.height = hgt + 'px'; tr.append(td); return tr; };
+    if (start > 0) frag.append(pad(start * RH));
+    for (let i = start; i < end; i++) {
+      const tr = document.createElement('tr');
+      const td0 = document.createElement('td');
+      td0.className = 'idx';
+      td0.textContent = i + 1;
+      tr.append(td0);
+      for (const c of cols) {
+        const td = document.createElement('td');
+        const s = table.cellText(c, i, true);
+        let cls = (isNumCol(c) ? 'num' : '') + (c.derived ? ' dv' : '');
+        if (s === '') { td.textContent = '—'; cls += ' na'; } else td.textContent = s;
+        td.className = cls;
+        tr.append(td);
+      }
+      frag.append(tr);
+    }
+    if (end < n) frag.append(pad((n - end) * RH));
+    tbody.replaceChildren(frag);
+  };
+  wrap.addEventListener('scroll', () => { if (!raf) raf = requestAnimationFrame(draw); }, { passive: true });
+  const derived = cols.filter((c) => c.derived).length;
+  body.append(h('div', { class: 'toolbar' },
+    h('span', null, fmtNum(table.rowCount) + ' 行 × ' + cols.length + ' 列'),
+    derived ? h('span', { class: 'tag' }, h('span', { class: 'dot', style: { '--c': 'var(--accent)' } }), derived + ' 个衍生特征（浅色底）') : null,
+    table.rowCount > n ? h('span', { class: 'muted' }, '仅显示前 ' + fmtNum(n) + ' 行') : null), wrap);
+  requestAnimationFrame(draw);
+}
+
+const PLOT_TYPES = [['line', '折线'], ['scatter', '散点'], ['area', '面积'], ['step', '阶梯'], ['bar', '柱状'], ['histogram', '直方图']];
+function renderPlotTab(body, table, e) {
+  const key = schemaKey(e);
+  const specs = (store.get('plots', {})[key] || []).slice();
+  const save = () => { const all = store.get('plots', {}); all[key] = specs; store.set('plots', all); };
+  const numeric = table._cols.filter((c) => c.type === 'number');
+  const tcol = U.timeColumn(table);
+  let type = 'line', x = tcol || '';
+  const ys = new Set();
+  const yBox = h('div', { class: 'chips' });
+  const xSel = h('select', { class: 'input', value: x, onchange: (ev) => { x = ev.target.value; ys.delete(x); drawY(); } },
+    h('option', { value: '' }, '（行号）'), table._cols.map((c) => h('option', { value: c.name }, c.name + (c.derived ? '  · 衍生' : ''))));
+  const drawY = () => {
+    xSel.disabled = type === 'histogram';
+    yBox.replaceChildren(...numeric.filter((c) => type === 'histogram' || c.name !== x).map((c) => h('button', {
+      class: 'chip' + (ys.has(c.name) ? ' on' : ''),
+      onclick: () => { if (ys.has(c.name)) ys.delete(c.name); else ys.add(c.name); drawY(); },
+    }, ys.has(c.name) ? icon('check', 12) : null, c.name)));
+    if (!numeric.length) yBox.append(h('span', { class: 'muted small' }, '没有数值列'));
+  };
+  const typeSel = h('select', { class: 'input', value: type, onchange: (ev) => { type = ev.target.value; drawY(); } }, PLOT_TYPES.map(([v, l]) => h('option', { value: v }, l)));
+  const add = () => {
+    if (!ys.size) { toast('请至少选择一个 Y 列', 'error'); return; }
+    const y = [...ys];
+    const spec = { type, y, title: type === 'histogram' ? y.join(', ') + ' 分布' : y.join(', ') + ' vs ' + (x || '行号') };
+    if (type !== 'histogram' && x) spec.x = x;
+    if (type === 'histogram') spec.bins = 40;
+    specs.unshift(spec);
+    save();
+    ys.clear();
+    drawY();
+    drawList();
+  };
+  body.append(h('div', { class: 'builder' },
+    h('div', { class: 'builder-row' },
+      h('span', { class: 'builder-label' }, '图形'), typeSel,
+      h('span', { class: 'builder-label', style: { marginLeft: '8px' } }, 'X 轴'), xSel,
+      h('div', { class: 'grow' }),
+      h('button', { class: 'btn', onclick: add }, icon('plus', 15), '添加图表')),
+    h('div', { class: 'builder-row', style: { alignItems: 'flex-start' } }, h('span', { class: 'builder-label', style: { paddingTop: '3px' } }, 'Y 轴'), h('div', { class: 'grow' }, yBox)),
+    h('div', { class: 'muted small' }, '图表会保存在浏览器中，列名相同的文件共享同一组图表。多选 Y 会画在同一张图上（同一纵轴，适合量纲相同的列）。')));
+  const list = h('div');
+  body.append(list);
+  const drawList = () => {
+    Charts.disposeIn(list);
+    list.textContent = '';
+    if (!specs.length) { list.append(h('div', { class: 'card' }, emptyState('chart', '还没有自定义图表', '选择图形、X 轴和一个或多个 Y 列，然后点「添加图表」。'))); return; }
+    const grid = h('div', { class: 'chart-grid' });
+    const gid = 'p' + ++groupSeq;
+    specs.forEach((s, i) => grid.append(chartCard(s, table, s.x && s.type !== 'histogram' ? gid + ':' + s.x : null, { onRemove: () => { specs.splice(i, 1); save(); drawList(); } })));
+    list.append(grid);
+  };
+  drawY();
+  drawList();
+}
+
+/* ---------- 多文件对比 ---------- */
+async function renderCompare(main) {
+  const seq = renderSeq;
+  const es = state.selected.map((id) => state.byId.get(id)).filter(Boolean);
+  const page = h('div', { class: 'page' });
+  main.append(page);
+  page.append(h('div', { class: 'page-head' }, h('div', { class: 'grow' },
+    h('h1', { class: 'title' }, '多文件对比'),
+    h('div', { class: 'subtitle' }, es.length + ' 个文件 · 在左侧勾选文件可增减（最多 ' + MAX_COMPARE + ' 个）'),
+    h('div', { class: 'meta-row' }, es.map((e) => h('span', { class: 'chip', style: { '--c': 'var(--s' + (state.selColor.get(e.id) + 1) + ')' }, title: e.path, onclick: () => openFile(e.id) },
+      h('span', { class: 'dot' }), e.path, h('span', { class: 'n', role: 'button', 'aria-label': '移出对比', onclick: (ev) => { ev.stopPropagation(); toggleSelect(e.id); } }, '×')))))));
+  if (es.length < 2) {
+    page.append(h('div', { class: 'card' }, emptyState('compare', '至少选择 2 个文件', '在左侧文件树中勾选文件（鼠标悬停时出现复选框），或在文件页点击「加入对比」。')));
+    return;
+  }
+  const body = h('div', { class: 'stack' });
+  page.append(body);
+  body.append(loadingBox('正在解析 ' + es.length + ' 个文件…'));
+  let tables;
+  try {
+    tables = await Promise.all(es.map(async (e) => { const t = await getTable(e); applyFeatures(t, e, pluginsFor(e)); return t; }));
+  } catch (err) {
+    if (seq === renderSeq) body.replaceChildren(errorBox(err, '解析失败'));
+    return;
+  }
+  if (seq !== renderSeq) return;
+  body.textContent = '';
+  const sets = tables.map((t) => new Map(t._cols.filter((c) => c.type === 'number' || c.type === 'datetime').map((c) => [c.name.toLowerCase(), c.name])));
+  const common = [...sets[0].keys()].filter((k) => sets.every((s) => s.has(k))).map((k) => sets[0].get(k));
+  if (!common.length) { body.append(h('div', { class: 'card' }, emptyState('alert', '所选文件没有共同的数值列'))); return; }
+  const cfg = state.compare;
+  const has = (n) => n === '' || common.some((c) => c.toLowerCase() === String(n).toLowerCase());
+  if (cfg.x == null || !has(cfg.x)) cfg.x = U.timeColumn(tables[0]) && has(U.timeColumn(tables[0])) ? U.timeColumn(tables[0]) : '';
+  if (!cfg.y || !has(cfg.y) || cfg.y === cfg.x) cfg.y = common.find((c) => c !== cfg.x && tables[0].type(c) === 'number') || common[0];
+  const out = h('div', { class: 'stack' });
+  const sel = (value, options, onchange) => h('select', { class: 'input', value, onchange: (ev) => { onchange(ev.target.value); draw(); } }, options.map(([v, l]) => h('option', { value: v }, l)));
+  body.append(h('div', { class: 'builder' }, h('div', { class: 'builder-row' },
+    h('span', { class: 'builder-label' }, 'X 轴'), sel(cfg.x, [['', '（行号）'], ...common.map((c) => [c, c])], (v) => { cfg.x = v; }),
+    h('span', { class: 'builder-label' }, 'Y 轴'), sel(cfg.y, common.filter((c) => tables[0].type(c) === 'number').map((c) => [c, c]), (v) => { cfg.y = v; }),
+    h('span', { class: 'builder-label' }, '图形'), sel(cfg.type, [['line', '折线'], ['scatter', '散点'], ['step', '阶梯']], (v) => { cfg.type = v; }),
+    h('label', { class: 'field' }, h('input', { type: 'checkbox', checked: cfg.align, onchange: (ev) => { cfg.align = ev.target.checked; draw(); } }), 'X 轴从各自起点对齐'))), out);
+  const draw = () => {
+    Charts.disposeIn(out);
+    out.textContent = '';
+    const T = themeTokens();
+    let xLabel = cfg.x || '行号', xType = 'auto';
+    const series = es.map((e, i) => {
+      const t = tables[i];
+      const c = t.getColumn(cfg.x);
+      let xv = c ? { name: c.name, values: c.values, type: c.type } : null;
+      if (xv && cfg.align) {
+        const sc = c.type === 'datetime' ? 1 : epochScale(c.values);
+        let x0 = NaN;
+        for (let k = 0; k < c.values.length; k++) if (isNum(c.values[k])) { x0 = c.values[k]; break; }
+        const f = sc ? sc / 1000 : 1;
+        xv = { name: '', values: Float64Array.from(c.values, (v) => (v - x0) * f), type: 'number' };
+        xLabel = sc ? '距起点（秒）' : cfg.x + ' − 起点';
+        xType = 'value';
+      }
+      return { name: e.path, x: xv, y: { name: cfg.y, values: t.col(cfg.y), type: 'number' }, color: T.series[state.selColor.get(e.id) % 8] };
+    });
+    out.append(h('div', { class: 'chart-grid' }, chartCard({ title: cfg.y + ' vs ' + xLabel, type: cfg.type, series, xType, xLabel, span: 2, height: 380 }, null, null)));
+    const rows = es.map((e, i) => {
+      const v = tables[i].col(cfg.y);
+      return { e, n: U.count(v), mean: U.mean(v), std: U.std(v), min: U.min(v), median: U.median(v), max: U.max(v) };
+    });
+    out.append(h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, icon('table', 16), h('div', { class: 'card-title' }, cfg.y + ' 统计')),
+      h('div', { class: 'card-body flush' }, sortableTable([
+        { key: 'file', label: '文件', value: (r) => r.e.path, render: (r) => h('span', { style: { display: 'inline-flex', gap: '8px', alignItems: 'center' } }, h('span', { class: 'dot', style: { '--c': 'var(--s' + (state.selColor.get(r.e.id) + 1) + ')' } }), h('span', { class: 'nm' }, r.e.path)) },
+        { key: 'n', label: '有效值', num: true }, { key: 'mean', label: '均值', num: true }, { key: 'std', label: '标准差', num: true },
+        { key: 'min', label: '最小', num: true }, { key: 'median', label: '中位数', num: true }, { key: 'max', label: '最大', num: true },
+      ], rows, { onRowClick: (r) => openFile(r.e.id) }))));
+  };
+  draw();
+}
+
+/* =====================================================================
+ * 插件管理 / 编辑器
+ * ===================================================================== */
+function pluginTemplate(table) {
+  const cols = table ? table._cols.filter((c) => !c.derived) : [];
+  const tc = table ? U.timeColumn(table) : 'ts';
+  const nums = cols.filter((c) => c.type === 'number' && c.name !== tc).map((c) => c.name).slice(0, 3);
+  const ys = nums.length ? nums : ['value'];
+  const x = tc || null;
+  const need = [x, ...ys].filter(Boolean);
+  const J = (v) => JSON.stringify(v);
+  const fileHint = table && table.path ? ' * 根据 ' + table.path.replace(/\*\//g, '* /') + ' 的列名生成\n' : '';
+  return `/**
+ * 我的插件
+${fileHint} * 完整 API 见「插件」面板的「编写插件」页，或 plugins/_template.js
+ */
+CSVViewer.registerPlugin({
+  id: 'my-plugin-${Date.now().toString(36)}',
+  name: '我的插件',
+  version: '0.1.0',
+  description: '这里写一句话说明插件做什么。',
+
+  // 含这些列（不区分大小写）的 CSV 会套用此插件
+  match: { columns: ${J(need)} },
+
+  // 可调参数：显示在插件卡片上，通过 ctx.params 读取
+  params: [
+    { key: 'window', label: '平滑窗口', type: 'number', default: 10, min: 1, step: 1 },
+  ],
+
+  // 衍生特征：返回与行数等长的数组，作为新列加入表格
+  features: [
+    {
+      name: ${J(ys[0] + '_ma')},
+      label: '滑动平均',
+      compute: (t, { utils, params }) => utils.movingAverage(t.col(${J(ys[0])}), params.window),
+    },
+  ],
+
+  // 指标卡片
+  metrics: (t, { utils: u }) => [
+    { label: '行数', value: t.rowCount },
+    { label: ${J(ys[0] + ' 均值')}, value: u.mean(t.col(${J(ys[0])})) },
+  ],
+
+  // 子图：每个对象一张图；x 相同的图会联动
+  charts: () => [
+${ys.map((y) => '    { title: ' + J(y + ' vs ' + (x || '行号')) + ", type: 'line', " + (x ? 'x: ' + J(x) + ', ' : '') + 'y: ' + (y === ys[0] ? J([y, y + '_ma']) : J(y)) + ' },').join('\n')}
+  ],
+
+  // 批量分析（可选）：每个文件汇总成一行
+  summarize: (t, { utils: u }) => ({
+    rows: t.rowCount,
+    ${J(ys[0] + '_mean')}: u.mean(t.col(${J(ys[0])})),
+  }),
+});
+`;
+}
+const API_DOC_ROWS = [
+  ['id / name / version / description', '基本信息；id 唯一，同 id 重新注册会覆盖（热更新）'],
+  ['match', '匹配规则：{ columns, anyColumns, numericColumns, path, test } 或函数 (info) => boolean。列名不区分大小写，columns 里的数组表示别名'],
+  ['priority / fallback', '排序优先级；fallback: true 为兜底插件，只在没有其他插件匹配时启用'],
+  ['params', '可调参数 [{ key, label, type: number | select | checkbox | text, default, options }]，在 ctx.params 中读取'],
+  ['features', '衍生特征 [{ name, label, description, compute(t, ctx) → 等长数组 }]，新列可用于绘图、导出'],
+  ['metrics(t, ctx)', '返回指标卡片 [{ label, value, unit, digits, hint }]'],
+  ['charts(t, ctx)', '返回子图 [{ title, type, x, y, ... }]，type: line | area | step | scatter | bar | histogram | heatmap'],
+  ['render(el, t, ctx)', '完全自定义的 DOM 渲染；ctx.renderChart(el, spec) 可在其中画图'],
+  ['summarize(t, ctx)', '批量分析：每个文件返回一行对象，在目录概览页运行'],
+  ['aggregate(s, ctx)', '跨文件汇总：s 为所有 summarize 结果组成的表，返回 { metrics, charts }'],
+];
+function openPluginManager(initialTab) {
+  let tab = initialTab === 'docs' ? 'docs' : 'list';
+  const body = h('div');
+  const draw = () => {
+    body.textContent = '';
+    body.append(h('div', { class: 'tabs' },
+      h('button', { class: 'tab' + (tab === 'list' ? ' on' : ''), onclick: () => { tab = 'list'; draw(); } }, icon('plug', 15), '已加载插件', h('span', { class: 'badge' }, Plugins.list.length)),
+      h('button', { class: 'tab' + (tab === 'docs' ? ' on' : ''), onclick: () => { tab = 'docs'; draw(); } }, icon('code', 15), '编写插件')));
+    if (tab === 'list') drawList(); else drawDocs();
+  };
+  const drawList = () => {
+    body.append(h('div', { class: 'pm-actions' },
+      h('button', { class: 'btn', onclick: () => $('#pluginInput').click() }, icon('upload', 15), '导入 .js'),
+      h('button', { class: 'btn ghost', onclick: () => openPluginEditor(null, pluginTemplate(null)) }, icon('plus', 15), '新建插件'),
+      state.folderPlugins.length ? h('button', { class: 'btn ghost', onclick: loadFolderPlugins }, icon('folder', 15), '加载数据目录中的 ' + state.folderPlugins.length + ' 个插件') : null,
+      h('span', { class: 'muted small' }, '也可以把 .js 文件直接拖进窗口')));
+    if (!Plugins.list.length) body.append(emptyState('plug', '还没有插件', '在 plugins/index.js 中登记插件文件，或在这里导入 / 新建。'));
+    const records = userPluginRecords();
+    for (const p of Plugins.sorted()) {
+      const n = state.entries.filter((e) => (e.matches || []).includes(p.id)).length;
+      const nAll = state.entries.filter((e) => (e.matchAll || []).includes(p.id)).length;
+      const rec = p._origin === 'user' ? records.find((r) => r.key === p._key) : null;
+      const origin = { file: '文件', user: '本地', folder: '数据目录', runtime: '运行时' }[p._origin] || p._origin;
+      const hooks = [
+        p.features.length ? p.features.length + ' 个特征' : null,
+        typeof p.metrics === 'function' ? '指标' : null,
+        typeof p.charts === 'function' ? '子图' : null,
+        typeof p.render === 'function' ? '自定义渲染' : null,
+        typeof p.summarize === 'function' ? '批量' : null,
+        typeof p.aggregate === 'function' ? '跨文件汇总' : null,
+      ].filter(Boolean).join(' · ');
+      body.append(h('div', { class: 'pm-row' },
+        h('span', { class: 'picon', style: { '--c': pluginColor(p) } }, icon('plug', 16)),
+        h('div', { class: 'grow' },
+          h('div', { class: 'pm-name' }, p.name, p.version ? h('span', { class: 'muted small' }, 'v' + p.version) : null, h('span', { class: 'tag' }, origin), p.fallback ? h('span', { class: 'tag' }, '兜底') : null, h('span', { class: 'muted small mono' }, p.id)),
+          p.description ? h('div', { class: 'pm-desc' }, p.description) : null,
+          h('div', { class: 'pm-meta' }, matchSummary(p), state.entries.length ? ' · 当前目录匹配 ' + n + ' 个文件' + (nAll !== n ? '（' + nAll + ' 个符合条件）' : '') : '', hooks ? ' · ' + hooks : ''),
+          p._src ? h('div', { class: 'pm-meta mono' }, p._src.replace(/^.*\/plugins\//, 'plugins/')) : null),
+        h('div', { class: 'pm-ctrl' },
+          rec ? h('button', { class: 'icon-btn sm', title: '编辑', 'aria-label': '编辑', onclick: () => openPluginEditor(rec) }, icon('edit', 15)) : null,
+          rec ? h('button', { class: 'icon-btn sm', title: '删除', 'aria-label': '删除', onclick: () => { if (confirm('删除本地插件「' + p.name + '」？')) { deleteUserPlugin(rec.key); toast('已删除', 'success'); } } }, icon('trash', 15)) : null,
+          h('label', { class: 'switch', title: Plugins.isEnabled(p.id) ? '已启用' : '已停用' },
+            h('input', { type: 'checkbox', checked: Plugins.isEnabled(p.id), 'aria-label': '启用 ' + p.name, onchange: (ev) => Plugins.setEnabled(p.id, ev.target.checked) }), h('i')))));
+    }
+  };
+  const drawDocs = () => {
+    body.append(
+      h('p', { class: 'muted', style: { marginTop: 0 } }, '一个插件就是一次 ', h('code', null, 'CSVViewer.registerPlugin({...})'), ' 调用。除 id 外所有字段都可选。放进 plugins/ 并登记到 plugins/index.js 即随页面加载；也可以在这里新建（保存在浏览器本地），或在数据目录中放 *.plugin.js。'),
+      h('table', { class: 'doc-table' }, h('thead', null, h('tr', null, h('th', null, '字段'), h('th', null, '说明'))),
+        h('tbody', null, API_DOC_ROWS.map(([k, v]) => h('tr', null, h('td', null, h('code', null, k)), h('td', null, v))))),
+      h('p', { class: 'muted' }, '钩子参数 ', h('code', null, 't'), ' 是数据表：', h('code', null, 't.col(name)'), ' 取列（数值列为 Float64Array，缺失为 NaN）、', h('code', null, 't.map([a, b], fn)'), ' 逐行计算、', h('code', null, 't.stats(name)'), '、', h('code', null, 't.find([别名…])'), '；', h('code', null, 'ctx.utils'), ' 提供 mean / std / rms / median / diff / movingAverage / ema / corr / linreg / duration / timeColumn 等。'),
+      h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', margin: '4px 0 10px' } },
+        h('b', null, '示例模板'), h('div', { class: 'grow' }),
+        h('button', { class: 'btn sm', onclick: () => openPluginEditor(null, pluginTemplate(null)) }, icon('plus', 14), '以此模板新建')),
+      h('pre', { class: 'code boxed', html: highlight(pluginTemplate(null)) }));
+  };
+  pluginListeners.add(draw);
+  draw();
+  openModal({ title: '插件', body, wide: true, onClose: () => pluginListeners.delete(draw) });
+}
+function openPluginEditor(rec, initial) {
+  const source = rec ? rec.source : initial || pluginTemplate(null);
+  const ta = h('textarea', { class: 'code-editor', spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off', value: source });
+  const msg = h('div', { style: { marginTop: '10px' } });
+  let modal = null;
+  const save = () => {
+    msg.textContent = '';
+    try {
+      const r = saveUserPlugin(ta.value, rec ? rec.key : null, rec ? rec.fileName : '');
+      toast('插件已保存并加载：' + r.ids.map((id) => (Plugins.byId.get(id) || {}).name || id).join('、'), 'success');
+      modal.close();
+    } catch (err) {
+      msg.append(errorBox(err, '无法加载'));
+    }
+  };
+  ta.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Tab') {
+      ev.preventDefault();
+      const s = ta.selectionStart, en = ta.selectionEnd;
+      ta.setRangeText('  ', s, en, 'end');
+    } else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
+      ev.preventDefault();
+      save();
+    }
+  });
+  modal = openModal({
+    title: rec ? '编辑插件 · ' + rec.name : '新建插件',
+    wide: true,
+    body: [h('p', { class: 'muted small', style: { marginTop: 0 } }, '代码保存在浏览器本地（localStorage），刷新页面后自动加载。', h('span', { class: 'kbd' }, 'Ctrl/⌘ + S'), ' 保存。插件代码在页面中直接执行，请只运行你信任的代码。'), ta, msg],
+    footer: [
+      h('button', { class: 'btn ghost', onclick: () => downloadText(((rec && rec.fileName) || 'my-plugin.js').replace(/(\.js)?$/, '.js'), ta.value, 'text/javascript;charset=utf-8') }, icon('download', 15), '下载 .js'),
+      h('div', { class: 'grow' }),
+      h('button', { class: 'btn ghost', onclick: () => modal.close() }, '取消'),
+      h('button', { class: 'btn', onclick: save }, icon('check', 15), '保存并加载'),
+    ],
+  });
+  setTimeout(() => ta.focus(), 0);
+}
+async function importPluginFiles(files) {
+  for (const f of files) {
+    try {
+      const r = saveUserPlugin(await f.text(), null, f.name);
+      toast('已导入插件 ' + f.name + '（' + r.ids.join('、') + '）', 'success');
+    } catch (err) {
+      toast('导入 ' + f.name + ' 失败：' + err.message, 'error');
+    }
+  }
+}
+
+/* =====================================================================
+ * 启动
+ * ===================================================================== */
+function bindDnD() {
+  let depth = 0;
+  const ov = $('#dropOverlay');
+  const hasFiles = (ev) => ev.dataTransfer && Array.from(ev.dataTransfer.types || []).includes('Files');
+  window.addEventListener('dragenter', (ev) => { if (!hasFiles(ev)) return; ev.preventDefault(); depth++; ov.classList.add('show'); });
+  window.addEventListener('dragover', (ev) => { if (!hasFiles(ev)) return; ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; });
+  window.addEventListener('dragleave', (ev) => { if (!hasFiles(ev)) return; depth = Math.max(0, depth - 1); if (!depth) ov.classList.remove('show'); });
+  window.addEventListener('drop', (ev) => {
+    if (!hasFiles(ev)) return;
+    ev.preventDefault();
+    depth = 0;
+    ov.classList.remove('show');
+    handleDrop(ev.dataTransfer).catch((err) => toast('读取失败：' + err.message, 'error'));
+  });
+}
+function boot() {
+  Charts.init();
+  $('#searchBox').prepend(icon('search', 15));
+  $('#dropOverlayInner').prepend(icon('upload', 22));
+  $('#btnSidebar').append(icon('menu', 18));
+  $('#btnOpen').replaceChildren(icon('folder', 15), h('span', { class: 'hide-sm' }, '打开文件夹'));
+  updatePluginButton();
+  updateThemeButton();
+  $('#btnOpen').addEventListener('click', openFolder);
+  $('#btnPlugins').addEventListener('click', () => openPluginManager());
+  $('#btnTheme').addEventListener('click', () => setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
+  $('#btnSidebar').addEventListener('click', () => $('#sidebar').classList.toggle('open'));
+  $('#dirInput').addEventListener('change', onDirInput);
+  $('#pluginInput').addEventListener('change', (ev) => { const fs = Array.from(ev.target.files || []); ev.target.value = ''; importPluginFiles(fs); });
+  let searchTimer = 0;
+  $('#search').addEventListener('input', (ev) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { state.search = ev.target.value.trim(); renderTree(); }, 120);
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.ctrlKey || ev.metaKey || ev.altKey || $('.modal-overlay')) return;
+    if (ev.target.closest && ev.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    if (ev.key === 'j') { ev.preventDefault(); stepFile(1); }
+    else if (ev.key === 'k') { ev.preventDefault(); stepFile(-1); }
+    else if (ev.key === '/') { ev.preventDefault(); $('#search').focus(); }
+  });
+  bindDnD();
+  renderSidebar();
+  renderMain();
+  if (!window.echarts) toast('ECharts 未能加载（vendor/echarts.min.js 缺失且无法访问 CDN），图表不可用', 'error', { sticky: true });
+  // plugins/ 下的内置插件在 load 之前注册完毕，之后再加载本地（用户）插件，使其可以覆盖同 id 的内置插件
+  window.addEventListener('load', loadUserPlugins);
+}
+
+window.CSVViewer = {
+  version: VERSION,
+  registerPlugin,
+  loadScripts,
+  utils: U,
+  h,
+  DataTable,
+  get plugins() { return Plugins.sorted().map((p) => ({ id: p.id, name: p.name, enabled: Plugins.isEnabled(p.id) })); },
+};
+boot();
+})();
+</script>
+<!-- 插件清单：在 plugins/index.js 中登记要自动加载的插件 -->
+<script src="plugins/index.js"></script>
+</body>
+</html>
