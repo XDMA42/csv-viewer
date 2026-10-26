@@ -1565,7 +1565,10 @@ function applyFeatures(table, entry, plugins) {
     for (const f of p.features) {
       try {
         if (!f.name || typeof f.compute !== 'function') throw new Error('特征需要 name 和 compute()');
+        // 缺少 requires 中的列时跳过该特征；compute 返回 null / undefined 也表示跳过
+        if (f.requires && !toList(f.requires).every((c) => table.getColumn(c))) continue;
         const vals = f.compute(table, ctx);
+        if (vals == null) continue;
         table.addColumn(f.name, vals, { source: p.id, label: f.label, unit: f.unit, description: f.description, type: f.type });
       } catch (err) {
         if (!errors.has(p.id)) errors.set(p.id, []);
@@ -2734,25 +2737,26 @@ function renderMain(opts) {
 const SAMPLE_PLUGIN = `CSVViewer.registerPlugin({
   id: 'ranging',
   name: '测距分析',
-  // 含这些列（不区分大小写）的 CSV 自动套用此插件
+  // 有 ts、且有任意一列测距数据（列名不区分大小写）就套用此插件
   match: {
-    columns: ['ts', 'dis', 'dis_sm', 'dis_main', 'dis_main_sm',
-              'rssi_init', 'rssi_refl'],
+    columns: ['ts'],
+    anyColumns: ['dis', 'dis_sm', 'dis_main', 'dis_main_sm',
+                 'rssi_init', 'rssi_refl'],
   },
 
-  // 衍生特征：新列会加入表格，可绘图、可导出
+  // 衍生特征：新列会加入表格，可绘图、可导出；缺列时自动跳过
   features: [
-    { name: 'dis_resid', compute: (t) => t.map(['dis', 'dis_sm'], (a, b) => a - b) },
+    { name: 'dis_resid', requires: ['dis', 'dis_sm'],
+      compute: (t) => t.map(['dis', 'dis_sm'], (a, b) => a - b) },
   ],
 
   // 子图：y 给多个列 = 一张图多条线；x 相同的图自动联动
-  charts: () => [
-    { title: 'dis & dis_sm vs ts', x: 'ts', y: ['dis', 'dis_sm'] },
-    { title: 'dis_main & dis_main_sm vs ts',
-      x: 'ts', y: ['dis_main', 'dis_main_sm'] },
-    { title: 'rssi_init & rssi_refl vs ts',
-      x: 'ts', y: ['rssi_init', 'rssi_refl'] },
-  ],
+  // 每组只画存在的列，一组都没有就跳过这张图
+  charts: (t) => [
+    ['dis', 'dis_sm'], ['dis_main', 'dis_main_sm'], ['rssi_init', 'rssi_refl'],
+  ].map((cols) => cols.filter((c) => t.has(c)))
+   .filter((ys) => ys.length)
+   .map((ys) => ({ title: ys.join(' & ') + ' vs ts', x: 'ts', y: ys })),
 });`;
 function renderWelcome(main) {
   const page = h('div', { class: 'page welcome' });
@@ -2957,7 +2961,8 @@ async function runBatch(p, scope) {
       try {
         const t = await getTable(e);
         applyFeatures(t, e, pluginsFor(e));
-        const r = p.summarize(t, makeCtx(p, t, e)) || {};
+        const r = Object.assign({}, p.summarize(t, makeCtx(p, t, e)));
+        for (const k in r) if (r[k] === undefined) delete r[k]; // 值为 undefined 的键视为该文件没有这一项
         job.rows.push(Object.assign({ file: e.name, path: e.path }, r, { path: e.path, __id: e.id, __order: order.get(e.id) }));
       } catch (err) {
         job.errors.push({ path: e.path, message: (err && err.message) || String(err) });
@@ -3494,7 +3499,7 @@ const API_DOC_ROWS = [
   ['match', '匹配规则：{ columns, anyColumns, numericColumns, path, test } 或函数 (info) => boolean。列名不区分大小写，columns 里的数组表示别名'],
   ['priority / fallback', '排序优先级；fallback: true 为兜底插件，只在没有其他插件匹配时启用'],
   ['params', '可调参数 [{ key, label, type: number | select | checkbox | text, default, options }]，在 ctx.params 中读取'],
-  ['features', '衍生特征 [{ name, label, description, compute(t, ctx) → 等长数组 }]，新列可用于绘图、导出'],
+  ['features', '衍生特征 [{ name, label, description, requires, compute(t, ctx) → 等长数组 }]，新列可用于绘图、导出；requires 中的列缺失时自动跳过'],
   ['metrics(t, ctx)', '返回指标卡片 [{ label, value, unit, digits, hint }]'],
   ['charts(t, ctx)', '返回子图 [{ title, type, x, y, ... }]，type: line | area | step | scatter | bar | histogram | heatmap'],
   ['render(el, t, ctx)', '完全自定义的 DOM 渲染；ctx.renderChart(el, spec) 可在其中画图'],

@@ -76,37 +76,41 @@ scripts\build-exe.bat          # Windows 命令行
 
 ### 示例：测距插件（`plugins/ranging.js`）
 
-CSV 中有 `ts`、`dis`、`dis_sm`、`dis_main`、`dis_main_sm`、`rssi_init`、`rssi_refl` 列时，
-自动画出 dis & dis_sm vs ts、dis_main & dis_main_sm vs ts、rssi_init & rssi_refl vs ts（每张图两条线，时间轴联动）：
+CSV 有 `ts` 列、并且有 `dis`、`dis_sm`、`dis_main`、`dis_main_sm`、`rssi_init`、`rssi_refl` 中任意一列时，
+自动画出 dis & dis_sm vs ts、dis_main & dis_main_sm vs ts、rssi_init & rssi_refl vs ts（每张图两条线，时间轴联动）。
+**列不全也能用**：每张图只画存在的列，一组都没有就跳过这张图（示例 `samples/ranging/2026-10-22/partial.csv`）。
 
 ```js
 CSVViewer.registerPlugin({
   id: 'ranging',
   name: '测距分析',
   match: {                                                // 列名不区分大小写
-    columns: ['ts', 'dis', 'dis_sm', 'dis_main', 'dis_main_sm', 'rssi_init', 'rssi_refl'],
+    columns: ['ts'],                                      // 必须有
+    anyColumns: ['dis', 'dis_sm', 'dis_main', 'dis_main_sm', 'rssi_init', 'rssi_refl'],   // 至少一个
   },
 
-  features: [                                             // 衍生特征 → 新列
-    { name: 'dis_resid', label: '平滑残差', compute: (t) => t.map(['dis', 'dis_sm'], (a, b) => a - b) },
+  features: [                                             // 衍生特征 → 新列；缺少 requires 中的列时自动跳过
+    { name: 'dis_resid', requires: ['dis', 'dis_sm'], compute: (t) => t.map(['dis', 'dis_sm'], (a, b) => a - b) },
   ],
 
-  metrics: (t, { utils: u }) => [                         // 指标卡片
-    { label: '残差 RMS', value: u.rms(t.col('dis_resid')) },
+  metrics: (t, { utils: u }) => [                         // 指标卡片；返回 false 的项会被忽略
+    t.has('dis_resid') && { label: '残差 RMS', value: u.rms(t.col('dis_resid')) },
   ],
 
-  charts: () => [                                         // y 给多个列 = 一张图多条线
-    { title: 'dis & dis_sm vs ts',           type: 'line', x: 'ts', y: ['dis', 'dis_sm'] },
-    { title: 'dis_main & dis_main_sm vs ts', type: 'line', x: 'ts', y: ['dis_main', 'dis_main_sm'] },
-    { title: 'rssi_init & rssi_refl vs ts',  type: 'line', x: 'ts', y: ['rssi_init', 'rssi_refl'] },
-  ],
+  charts: (t) =>                                          // 每组只画存在的列，一组都没有就跳过
+    [['dis', 'dis_sm'], ['dis_main', 'dis_main_sm'], ['rssi_init', 'rssi_refl']]
+      .map((cols) => cols.filter((c) => t.has(c)))
+      .filter((ys) => ys.length)
+      .map((ys) => ({ title: ys.join(' & ') + ' vs ts', type: 'line', x: 'ts', y: ys })),   // y 多个列 = 一张图多条线
 
-  summarize: (t, { utils: u }) => ({ rssi_init_mean: u.mean(t.col('rssi_init')) }),   // 批量：每个文件一行
+  summarize: (t, { utils: u }) => ({                      // 批量：每个文件一行；undefined 表示该文件没有这一项
+    rssi_init_mean: t.has('rssi_init') ? u.mean(t.col('rssi_init')) : undefined,
+  }),
 });
 ```
 
-完整版本（`plugins/ranging.js`）还包含两路平滑残差、RSSI 差、采样间隔、离群点、可调参数、rssi vs dis 散点、残差分布和跨文件汇总图。
-插件要求这 7 列都存在；如果你的文件列名不同，改 `match` 和各处列名即可。`match.columns` 里可以写别名数组（如 `['dis_sm', 'dissm']`），在 `charts(t)` 里用 `t.find(['dis_sm', 'dissm'])` 取得实际列名。
+完整版本（`plugins/ranging.js`）还包含两路平滑残差、RSSI 差、采样间隔、离群点、可调参数、rssi vs dis 散点、残差分布和跨文件汇总图，同样都按列是否存在自动取舍。
+如果你的文件列名不同，改 `match` 和各处列名即可。`match` 里可以写别名数组（如 `['dis_sm', 'dissm']`），在 `charts(t)` 里用 `t.find(['dis_sm', 'dissm'])` 取得实际列名。
 仓库另外自带两个**兜底插件**：`timeseries.js`（任意带时间列的 CSV：每个数值列随时间的曲线）和 `generic-stats.js`（相关系数矩阵、分布直方图）。
 写新插件可从 `plugins/_template.js` 开始，里面注释了所有字段。
 
@@ -147,7 +151,8 @@ match: {
 **params**：`{ key, label, type: 'number' | 'select' | 'checkbox' | 'text', default, min, max, step, options }`，
 在页面上修改后自动重算，钩子中通过 `ctx.params.key` 读取（select 的值是字符串）。
 
-**features**：`{ name, label, description, compute(t, ctx) }`，`compute` 返回与行数等长的数组。
+**features**：`{ name, label, description, requires, compute(t, ctx) }`，`compute` 返回与行数等长的数组。
+`requires` 列出计算所需的列，缺少任何一列时跳过该特征（不报错）；`compute` 返回 `null` 也表示跳过。
 按插件优先级依次计算，后面的特征可以用前面的；新列可用于绘图、列统计、导出。
 
 **chartSpec**：
@@ -179,6 +184,9 @@ match: {
 `diff cumsum movingAverage(a, w, center) ema(a, alpha) zscore histogram(a, bins) corr(a, b) linreg(x, y)` ·
 `duration(values, unit)`（返回 `{ seconds, text }`，unit 为 `auto | s | ms | us | ns`）· `timeColumn(t)` · `epochScale(values)` · `isTimeName(name)` ·
 `fmt fmtDuration fmtDate fmtBytes`。
+
+插件文件里如果需要辅助变量 / 函数，请把整个文件包在 `(() => { ... })();` 里（参考 `plugins/ranging.js`），
+避免与其他插件或同一插件的另一份副本在全局重名。
 
 > 插件是普通 JavaScript，在页面中直接执行，请只加载你信任的代码。
 

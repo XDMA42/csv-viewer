@@ -5,6 +5,7 @@
   samples/ranging/2026-10-20/anchor02_static.csv
   samples/ranging/2026-10-21/corridor/run_01.csv   列名大写、ts 为秒级时间戳
   samples/ranging/2026-10-21/corridor/run_02.csv   ts 为从 0 开始的相对秒
+  samples/ranging/2026-10-22/partial.csv           列不全（没有 dis_main / dis_main_sm / rssi_refl）
   samples/environment/sensor_2026-10.csv           日期字符串时间列
   samples/misc/城市统计_gbk.csv                     GBK 编码
   samples/misc/orders_semicolon.csv                分号分隔、带引号字段
@@ -146,5 +147,13 @@ with open(path("misc", "orders_semicolon.csv"), "w", newline="", encoding="utf-8
     for i in range(60):
         w.writerow([1000 + i, random.choice(names), random.choice(["", "加急", "含发票, 需盖章", "多行\n备注"]),
                     f"{random.uniform(20, 900):.2f}", random.randint(1, 9)])
+
+# 列不全的测距日志：插件只画已有的列（放在最后生成，不影响上面文件的随机序列）
+with open(path("ranging", "2026-10-22", "partial.csv"), "w", newline="", encoding="utf-8") as f:
+    w = csv.writer(f)
+    w.writerow(["ts", "dis", "dis_sm", "rssi_init"])
+    for t, *vals, nlos in ranging_rows(900, 10, walk):
+        row = fmt_row(*vals)
+        w.writerow([int(1761123600000 + t * 1000), row[0], row[1], row[4]])
 
 print("samples written to", ROOT)

@@ -59,6 +59,7 @@ CSVViewer.registerPlugin({
       name: 'value_ma',
       label: '滑动平均',
       description: 'value 的滑动平均',
+      requires: [['value', 'val']],      // 计算所需的列，缺失时跳过该特征（可选）
       compute: (t, { utils, params }) => utils.movingAverage(t.col(t.find(['value', 'val'])), params.window),
     },
   ],
