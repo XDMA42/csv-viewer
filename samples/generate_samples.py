@@ -24,38 +24,58 @@ def path(*parts):
     return p
 
 
+def smoother():
+    """简单的离群抑制 + 指数平滑"""
+    state = [None]
+
+    def step(x):
+        v = state[0]
+        if v is None:
+            v = x
+        elif abs(x - v) < 0.5:
+            v = 0.75 * v + 0.25 * x
+        else:
+            v = 0.95 * v + 0.05 * x
+        state[0] = v
+        return v
+    return step
+
+
 def ranging_rows(n, hz, distance_at, nlos_rate=0.02):
-    """模拟测距日志：dis 为带噪声/离群的原始距离，dissm 为平滑结果，rssi 随距离衰减。"""
+    """模拟测距日志：dis / dis_main 为两路带噪声与离群的距离，*_sm 为对应的平滑结果；
+    rssi_init / rssi_refl 为两路信号强度，随距离衰减，NLOS 时首路明显减弱。"""
     rows = []
-    smooth = None
+    sm, sm_main = smoother(), smoother()
     for i in range(n):
         t = i / hz
-        d_true = distance_at(t)
-        noise = random.gauss(0, 0.06 + 0.01 * d_true)
-        outlier = random.uniform(0.6, 2.5) if random.random() < nlos_rate else 0.0
-        dis = max(0.05, d_true + noise + outlier)
-        # 简单的离群抑制 + 指数平滑
-        if smooth is None:
-            smooth = dis
-        elif abs(dis - smooth) < 0.5:
-            smooth = 0.75 * smooth + 0.25 * dis
-        else:
-            smooth = 0.95 * smooth + 0.05 * dis
-        rssi = -42 - 20 * math.log10(max(d_true, 0.3)) + random.gauss(0, 2.2) - (6 if outlier else 0)
-        rows.append((t, dis, smooth, rssi, outlier > 0))
+        d = distance_at(t)
+        nlos = random.random() < nlos_rate
+        outlier = random.uniform(0.6, 2.5) if nlos else 0.0
+        dis = max(0.05, d + random.gauss(0, 0.06 + 0.01 * d) + outlier)
+        dis_main = max(0.05, d + 0.15 + 0.02 * d + random.gauss(0, 0.05 + 0.008 * d) + 0.5 * outlier)
+        rssi_init = -42 - 20 * math.log10(max(d, 0.3)) + random.gauss(0, 2.0) - (7 if nlos else 0)
+        rssi_refl = rssi_init - random.uniform(3, 9) + (5 if nlos else 0) + random.gauss(0, 1.5)
+        rows.append((t, dis, sm(dis), dis_main, sm_main(dis_main), rssi_init, rssi_refl, nlos))
     return rows
+
+
+def fmt_row(dis, dis_sm, dis_main, dis_main_sm, rssi_init, rssi_refl):
+    return [f"{dis:.3f}", f"{dis_sm:.3f}", f"{dis_main:.3f}", f"{dis_main_sm:.3f}", f"{rssi_init:.1f}", f"{rssi_refl:.1f}"]
+
+
+RANGING_COLS = ["dis", "dis_sm", "dis_main", "dis_main_sm", "rssi_init", "rssi_refl"]
 
 
 def write_ranging_ms(filename, start_ms, n, hz, distance_at, anchor):
     with open(path(*filename), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["ts", "anchor", "seq", "dis", "dissm", "rssi", "fp_power", "quality"])
-        for i, (t, dis, sm, rssi, nlos) in enumerate(ranging_rows(n, hz, distance_at)):
-            fp = rssi - random.uniform(1.5, 4.0) - (5 if nlos else 0)
-            quality = max(0, min(100, int(95 - abs(dis - sm) * 60 + random.gauss(0, 3))))
-            # 偶尔缺失 rssi（空字符串）
-            rssi_s = "" if random.random() < 0.004 else f"{rssi:.1f}"
-            w.writerow([int(start_ms + t * 1000), anchor, i, f"{dis:.3f}", f"{sm:.3f}", rssi_s, f"{fp:.1f}", quality])
+        w.writerow(["ts", "anchor", "seq", *RANGING_COLS, "quality"])
+        for i, (t, *vals, nlos) in enumerate(ranging_rows(n, hz, distance_at)):
+            quality = max(0, min(100, int(95 - abs(vals[0] - vals[1]) * 60 + random.gauss(0, 3))))
+            row = fmt_row(*vals)
+            if random.random() < 0.004:
+                row[4] = ""  # 偶尔缺失 rssi_init（空字符串）
+            w.writerow([int(start_ms + t * 1000), anchor, i, *row, quality])
 
 
 def walk(t):  # 来回走动 1 ~ 14 米
@@ -80,16 +100,16 @@ write_ranging_ms(("ranging", "2026-10-20", "anchor02_static.csv"), 1760950800000
 # 列名大写 + 秒级时间戳（带小数），演示列名不区分大小写与时间戳自动识别
 with open(path("ranging", "2026-10-21", "corridor", "run_01.csv"), "w", newline="", encoding="utf-8") as f:
     w = csv.writer(f)
-    w.writerow(["TS", "DIS", "DISSM", "RSSI", "NLOS"])
-    for t, dis, sm, rssi, nlos in ranging_rows(1500, 20, corridor, nlos_rate=0.04):
-        w.writerow([f"{1761037200 + t:.3f}", f"{dis:.3f}", f"{sm:.3f}", f"{rssi:.1f}", int(nlos)])
+    w.writerow(["TS", *[c.upper() for c in RANGING_COLS], "NLOS"])
+    for t, *vals, nlos in ranging_rows(1500, 20, corridor, nlos_rate=0.04):
+        w.writerow([f"{1761037200 + t:.3f}", *fmt_row(*vals), int(nlos)])
 
 # 相对时间（秒），演示非时间戳的 ts
 with open(path("ranging", "2026-10-21", "corridor", "run_02.csv"), "w", newline="", encoding="utf-8") as f:
     w = csv.writer(f)
-    w.writerow(["ts", "dis", "dissm", "rssi", "NLOS"])
-    for t, dis, sm, rssi, nlos in ranging_rows(1100, 20, corridor_back, nlos_rate=0.03):
-        w.writerow([f"{t:.2f}", f"{dis:.3f}", f"{sm:.3f}", f"{rssi:.1f}", int(nlos)])
+    w.writerow(["ts", *RANGING_COLS, "NLOS"])
+    for t, *vals, nlos in ranging_rows(1100, 20, corridor_back, nlos_rate=0.03):
+        w.writerow([f"{t:.2f}", *fmt_row(*vals), int(nlos)])
 
 # 环境传感器：日期字符串时间列
 with open(path("environment", "sensor_2026-10.csv"), "w", newline="", encoding="utf-8") as f:

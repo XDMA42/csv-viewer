@@ -76,33 +76,37 @@ scripts\build-exe.bat          # Windows 命令行
 
 ### 示例：测距插件（`plugins/ranging.js`）
 
-CSV 中有 `ts`、`dis`、`dissm`、`rssi` 等列时，自动画出 dis vs ts、dissm vs ts、rssi vs ts：
+CSV 中有 `ts`、`dis`、`dis_sm`、`dis_main`、`dis_main_sm`、`rssi_init`、`rssi_refl` 列时，
+自动画出 dis & dis_sm vs ts、dis_main & dis_main_sm vs ts、rssi_init & rssi_refl vs ts（每张图两条线，时间轴联动）：
 
 ```js
 CSVViewer.registerPlugin({
   id: 'ranging',
   name: '测距分析',
-  match: { columns: ['ts', 'dis', 'dissm', 'rssi'] },   // 列名不区分大小写
+  match: {                                                // 列名不区分大小写
+    columns: ['ts', 'dis', 'dis_sm', 'dis_main', 'dis_main_sm', 'rssi_init', 'rssi_refl'],
+  },
 
   features: [                                             // 衍生特征 → 新列
-    { name: 'dis_resid', label: '平滑残差', compute: (t) => t.map(['dis', 'dissm'], (a, b) => a - b) },
+    { name: 'dis_resid', label: '平滑残差', compute: (t) => t.map(['dis', 'dis_sm'], (a, b) => a - b) },
   ],
 
   metrics: (t, { utils: u }) => [                         // 指标卡片
     { label: '残差 RMS', value: u.rms(t.col('dis_resid')) },
   ],
 
-  charts: () => [                                         // 子图：x 相同的图自动联动
-    { title: 'dis vs ts',   type: 'line', x: 'ts', y: 'dis' },
-    { title: 'dissm vs ts', type: 'line', x: 'ts', y: 'dissm' },
-    { title: 'rssi vs ts',  type: 'line', x: 'ts', y: 'rssi' },
+  charts: () => [                                         // y 给多个列 = 一张图多条线
+    { title: 'dis & dis_sm vs ts',           type: 'line', x: 'ts', y: ['dis', 'dis_sm'] },
+    { title: 'dis_main & dis_main_sm vs ts', type: 'line', x: 'ts', y: ['dis_main', 'dis_main_sm'] },
+    { title: 'rssi_init & rssi_refl vs ts',  type: 'line', x: 'ts', y: ['rssi_init', 'rssi_refl'] },
   ],
 
-  summarize: (t, { utils: u }) => ({ rssi_mean: u.mean(t.col('rssi')) }),   // 批量：每个文件一行
+  summarize: (t, { utils: u }) => ({ rssi_init_mean: u.mean(t.col('rssi_init')) }),   // 批量：每个文件一行
 });
 ```
 
-完整版本还包含采样间隔、离群点、可调参数、rssi vs dis 散点、残差分布和跨文件汇总图。
+完整版本（`plugins/ranging.js`）还包含两路平滑残差、RSSI 差、采样间隔、离群点、可调参数、rssi vs dis 散点、残差分布和跨文件汇总图。
+插件要求这 7 列都存在；如果你的文件列名不同，改 `match` 和各处列名即可。`match.columns` 里可以写别名数组（如 `['dis_sm', 'dissm']`），在 `charts(t)` 里用 `t.find(['dis_sm', 'dissm'])` 取得实际列名。
 仓库另外自带两个**兜底插件**：`timeseries.js`（任意带时间列的 CSV：每个数值列随时间的曲线）和 `generic-stats.js`（相关系数矩阵、分布直方图）。
 写新插件可从 `plugins/_template.js` 开始，里面注释了所有字段。
 
@@ -184,7 +188,7 @@ match: {
 index.html              主程序（HTML + CSS + JS，单文件）
 plugins/
   index.js              插件清单：列出随页面加载的插件
-  ranging.js            测距分析（ts / dis / dissm / rssi）
+  ranging.js            测距分析（ts / dis / dis_sm / dis_main / dis_main_sm / rssi_init / rssi_refl）
   timeseries.js         时间序列（兜底）
   generic-stats.js      通用统计（兜底）
   _template.js          插件模板（带完整注释，不会自动加载）

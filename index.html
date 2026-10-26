@@ -2735,18 +2735,23 @@ const SAMPLE_PLUGIN = `CSVViewer.registerPlugin({
   id: 'ranging',
   name: '测距分析',
   // 含这些列（不区分大小写）的 CSV 自动套用此插件
-  match: { columns: ['ts', 'dis', 'dissm', 'rssi'] },
+  match: {
+    columns: ['ts', 'dis', 'dis_sm', 'dis_main', 'dis_main_sm',
+              'rssi_init', 'rssi_refl'],
+  },
 
   // 衍生特征：新列会加入表格，可绘图、可导出
   features: [
-    { name: 'dis_resid', compute: (t) => t.map(['dis', 'dissm'], (a, b) => a - b) },
+    { name: 'dis_resid', compute: (t) => t.map(['dis', 'dis_sm'], (a, b) => a - b) },
   ],
 
-  // 子图：x 相同的图自动联动缩放与悬停
+  // 子图：y 给多个列 = 一张图多条线；x 相同的图自动联动
   charts: () => [
-    { title: 'dis vs ts',   type: 'line', x: 'ts', y: 'dis' },
-    { title: 'dissm vs ts', type: 'line', x: 'ts', y: 'dissm' },
-    { title: 'rssi vs ts',  type: 'line', x: 'ts', y: 'rssi' },
+    { title: 'dis & dis_sm vs ts', x: 'ts', y: ['dis', 'dis_sm'] },
+    { title: 'dis_main & dis_main_sm vs ts',
+      x: 'ts', y: ['dis_main', 'dis_main_sm'] },
+    { title: 'rssi_init & rssi_refl vs ts',
+      x: 'ts', y: ['rssi_init', 'rssi_refl'] },
   ],
 });`;
 function renderWelcome(main) {
@@ -2998,7 +3003,7 @@ function batchCard(job, p) {
     key: k,
     label: label[k] || k,
     num: k !== 'file' && job.rows.some((r) => typeof r[k] === 'number'),
-    render: k === 'file' ? (r) => h('span', { class: 'nm', title: r.path }, r.file) : undefined,
+    render: k === 'file' ? (r) => h('span', { class: 'nm', title: r.path, style: { whiteSpace: 'nowrap' } }, r.file) : undefined,
   }));
   const head = h('div', { class: 'batch-head' },
     icon('check', 15),
@@ -3014,7 +3019,9 @@ function batchCard(job, p) {
       const res = p.aggregate(st, makeCtx(p, st, null)) || {};
       if (res.metrics && res.metrics.length) body.append(metricTiles(res.metrics, true));
       if (res.charts && res.charts.length) {
-        body.append(chartGrid(res.charts.filter(Boolean).map((s) => (s.horizontal && !s.height ? Object.assign({}, s, { height: Math.max(180, st.rowCount * 26 + 50) }) : s)), st));
+        // 横向条形图按文件数和每个文件的条数自动定高
+        const autoHeight = (s) => Math.max(180, st.rowCount * (14 + 12 * yList(s.y).length) + 60);
+        body.append(chartGrid(res.charts.filter(Boolean).map((s) => (s.horizontal && !s.height ? Object.assign({}, s, { height: autoHeight(s) }) : s)), st));
       }
     } catch (err) { body.append(errorBox(err, 'aggregate()')); }
   }
