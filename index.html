@@ -447,6 +447,8 @@ pre.code.boxed { border-radius: 10px; border: 1px solid var(--border); max-heigh
 .pm-desc { font-size: 12.5px; color: var(--text-2); margin-top: 2px; }
 .pm-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .pm-ctrl { display: flex; align-items: center; gap: 6px; flex: none; }
+.pm-desktop { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; margin-bottom: 6px; border-radius: 9px; background: var(--surface-2); font-size: 13px; }
+.pm-desktop .mono { word-break: break-all; }
 textarea.code-editor {
   width: 100%; height: min(58vh, 560px); resize: vertical;
   padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border-strong);
@@ -542,8 +544,8 @@ textarea.code-editor:focus { border-color: var(--accent); box-shadow: 0 0 0 3px 
 <input type="file" id="dirInput" webkitdirectory directory multiple hidden>
 <input type="file" id="pluginInput" accept=".js,text/javascript" multiple hidden>
 
-<!-- ECharts：优先本地 vendor/，缺失时回退到 CDN -->
-<script src="vendor/echarts.min.js"></script>
+<!-- ECharts：优先本地 lib/，缺失时回退到 CDN -->
+<script src="lib/echarts.min.js"></script>
 <script>window.echarts || document.write('<script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"><\/script>');</script>
 
 <script>
@@ -1356,7 +1358,8 @@ function registerPlugin(def) {
   const prev = Plugins.byId.get(id);
   const seq = prev ? 0 : Plugins.colorSeq++;
   const script = document.currentScript;
-  const meta = loadingMeta || { origin: script && script.src ? 'file' : 'runtime', src: script && script.src ? script.src : '' };
+  const src = script && script.src ? script.src : '';
+  const meta = loadingMeta || { origin: src ? (src.includes('/ext/plugins/') ? 'ext' : 'file') : 'runtime', src };
   const p = Object.assign({}, def, {
     id,
     name: String(def.name || id),
@@ -1405,6 +1408,68 @@ function loadScripts(list) {
     s.onerror = () => { toast('插件文件加载失败：' + name, 'error'); resolve(false); };
     document.head.append(s);
   })));
+}
+
+/* =====================================================================
+ * 桌面版（CSVLens.exe）集成：页面由 exe 内置的本地服务提供时启用
+ * ===================================================================== */
+async function detectDesktop() {
+  if (!/^https?:$/.test(location.protocol)) return;
+  let info = null;
+  try {
+    const r = await fetch('api/ping', { cache: 'no-store' });
+    if (r.ok) info = await r.json();
+  } catch (e) { return; }
+  if (!info || info.app !== 'csv-lens') return;
+  state.desktop = info;
+  if (info.mode === 'browser') {
+    // 浏览器模式靠心跳判断页面是否已关闭，关闭后 exe 自动退出
+    setInterval(() => { fetch('api/ping', { cache: 'no-store' }).catch(() => {}); }, 20000);
+    toast('未检测到 WebView2 运行时，已改用浏览器打开。关闭此页面几分钟后程序会自动退出。', 'info', { timeout: 12000 });
+  }
+  await loadExtPlugins(false);
+  renderMain({ keepScroll: true });
+}
+/** 加载 exe 同目录 plugins 文件夹中的插件；reload=true 时先移除旧版本再加载（热更新） */
+async function loadExtPlugins(reload) {
+  let names = [];
+  try { names = await (await fetch('api/plugins', { cache: 'no-store' })).json(); } catch (e) { return 0; }
+  if (reload) for (const p of Plugins.list.filter((x) => x._origin === 'ext')) Plugins.remove(p.id);
+  const stamp = reload ? '?t=' + Date.now() : '';
+  await loadScripts(names.map((n) => '/ext/plugins/' + encodeURIComponent(n) + stamp));
+  return names.length;
+}
+async function openExtPluginDir() {
+  try {
+    const r = await fetch('api/open-plugin-dir', { method: 'POST', headers: { 'X-CSV-Lens': '1' } });
+    if (!r.ok) throw new Error(await r.text());
+  } catch (err) { toast('无法打开插件文件夹：' + err.message, 'error'); }
+}
+async function loadSamples() {
+  const busy = toast('正在载入示例数据…', 'info', { sticky: true, spinner: true });
+  try {
+    const list = await (await fetch('api/samples', { cache: 'no-store' })).json();
+    const items = await Promise.all(list.map(async (x) => {
+      const r = await fetch('samples/' + x.path.split('/').map(encodeURIComponent).join('/'));
+      if (!r.ok) throw new Error(x.path + '：HTTP ' + r.status);
+      return { path: x.path, file: new File([await r.blob()], x.path.split('/').pop(), { lastModified: Date.now() }) };
+    }));
+    busy.close();
+    await loadCollection(items, 'samples（示例）', null);
+  } catch (err) {
+    busy.close();
+    toast('载入示例数据失败：' + err.message, 'error');
+  }
+}
+function pluginSourceLabel(p) {
+  if (!p._src) return '';
+  const file = decodeURIComponent(p._src.replace(/[?#].*$/, '').split('/').pop());
+  if (p._origin === 'ext' && state.desktop) {
+    const dir = state.desktop.pluginDir;
+    return dir + (dir.includes('\\') ? '\\' : '/') + file;
+  }
+  if (p._origin === 'folder') return p._src;
+  return 'plugins/' + file;
 }
 
 /* 用户插件（保存在 localStorage） */
@@ -1975,6 +2040,7 @@ const state = {
   selColor: new Map(),
   visibleFiles: [],
   folderPlugins: [],
+  desktop: null, // 在桌面版（CSVLens.exe）中运行时为 /api/ping 的返回值
   batches: new Map(),
   compare: { x: null, y: null, type: 'line', align: true },
 };
@@ -2693,9 +2759,11 @@ function renderWelcome(main) {
     h('div', { class: 'drop', onclick: openFolder, role: 'button', tabindex: '0', onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openFolder(); } } },
       h('div', { class: 'drop-icon' }, icon('folder', 28)),
       h('div', { class: 'drop-title' }, '选择或拖入一个根目录'),
-      h('div', { class: 'drop-sub' }, '支持 .csv / .tsv，自动识别分隔符与编码（UTF-8 / GBK）。数据只在本地浏览器中处理，不会上传。仓库自带 samples/ 示例目录，可以直接选它试用。'),
+      h('div', { class: 'drop-sub' }, '支持 .csv / .tsv，自动识别分隔符与编码（UTF-8 / GBK）。数据只在本机处理，不会上传。',
+        state.desktop ? '没有现成数据？点「加载示例数据」先看看效果。' : '仓库自带 samples/ 示例目录，可以直接选它试用。'),
       h('div', { class: 'drop-actions' },
         h('button', { class: 'btn', onclick: (ev) => { ev.stopPropagation(); openFolder(); } }, icon('folder', 15), '选择根目录'),
+        state.desktop ? h('button', { class: 'btn ghost', onclick: (ev) => { ev.stopPropagation(); loadSamples(); } }, icon('sparkles', 15), '加载示例数据') : null,
         h('button', { class: 'btn ghost', onclick: (ev) => { ev.stopPropagation(); openPluginManager(); } }, icon('plug', 15), '管理插件'))),
     h('div', { class: 'features' },
       feature('layers', '递归扫描', '读取每个文件的表头，统计列分布、按表结构分组；侧栏可按文件名、路径或列名搜索。'),
@@ -3442,13 +3510,20 @@ function openPluginManager(initialTab) {
       h('button', { class: 'btn ghost', onclick: () => openPluginEditor(null, pluginTemplate(null)) }, icon('plus', 15), '新建插件'),
       state.folderPlugins.length ? h('button', { class: 'btn ghost', onclick: loadFolderPlugins }, icon('folder', 15), '加载数据目录中的 ' + state.folderPlugins.length + ' 个插件') : null,
       h('span', { class: 'muted small' }, '也可以把 .js 文件直接拖进窗口')));
+    if (state.desktop) {
+      body.append(h('div', { class: 'pm-desktop' },
+        icon('folder', 16),
+        h('div', { class: 'grow' }, h('div', null, '插件文件夹：放进去的 .js 会在启动时自动加载'), h('div', { class: 'muted small mono' }, state.desktop.pluginDir)),
+        h('button', { class: 'btn sm ghost', onclick: openExtPluginDir }, '打开文件夹'),
+        h('button', { class: 'btn sm ghost', onclick: async () => { const n = await loadExtPlugins(true); toast('已重新加载插件文件夹（' + n + ' 个文件）', 'success'); } }, icon('refresh', 14), '重新加载插件文件夹')));
+    }
     if (!Plugins.list.length) body.append(emptyState('plug', '还没有插件', '在 plugins/index.js 中登记插件文件，或在这里导入 / 新建。'));
     const records = userPluginRecords();
     for (const p of Plugins.sorted()) {
       const n = state.entries.filter((e) => (e.matches || []).includes(p.id)).length;
       const nAll = state.entries.filter((e) => (e.matchAll || []).includes(p.id)).length;
       const rec = p._origin === 'user' ? records.find((r) => r.key === p._key) : null;
-      const origin = { file: '文件', user: '本地', folder: '数据目录', runtime: '运行时' }[p._origin] || p._origin;
+      const origin = { file: '内置', user: '本地', folder: '数据目录', ext: '插件文件夹', runtime: '运行时' }[p._origin] || p._origin;
       const hooks = [
         p.features.length ? p.features.length + ' 个特征' : null,
         typeof p.metrics === 'function' ? '指标' : null,
@@ -3463,7 +3538,7 @@ function openPluginManager(initialTab) {
           h('div', { class: 'pm-name' }, p.name, p.version ? h('span', { class: 'muted small' }, 'v' + p.version) : null, h('span', { class: 'tag' }, origin), p.fallback ? h('span', { class: 'tag' }, '兜底') : null, h('span', { class: 'muted small mono' }, p.id)),
           p.description ? h('div', { class: 'pm-desc' }, p.description) : null,
           h('div', { class: 'pm-meta' }, matchSummary(p), state.entries.length ? ' · 当前目录匹配 ' + n + ' 个文件' + (nAll !== n ? '（' + nAll + ' 个符合条件）' : '') : '', hooks ? ' · ' + hooks : ''),
-          p._src ? h('div', { class: 'pm-meta mono' }, p._src.replace(/^.*\/plugins\//, 'plugins/')) : null),
+          p._src ? h('div', { class: 'pm-meta mono' }, pluginSourceLabel(p)) : null),
         h('div', { class: 'pm-ctrl' },
           rec ? h('button', { class: 'icon-btn sm', title: '编辑', 'aria-label': '编辑', onclick: () => openPluginEditor(rec) }, icon('edit', 15)) : null,
           rec ? h('button', { class: 'icon-btn sm', title: '删除', 'aria-label': '删除', onclick: () => { if (confirm('删除本地插件「' + p.name + '」？')) { deleteUserPlugin(rec.key); toast('已删除', 'success'); } } }, icon('trash', 15)) : null,
@@ -3473,7 +3548,9 @@ function openPluginManager(initialTab) {
   };
   const drawDocs = () => {
     body.append(
-      h('p', { class: 'muted', style: { marginTop: 0 } }, '一个插件就是一次 ', h('code', null, 'CSVViewer.registerPlugin({...})'), ' 调用。除 id 外所有字段都可选。放进 plugins/ 并登记到 plugins/index.js 即随页面加载；也可以在这里新建（保存在浏览器本地），或在数据目录中放 *.plugin.js。'),
+      h('p', { class: 'muted', style: { marginTop: 0 } }, '一个插件就是一次 ', h('code', null, 'CSVViewer.registerPlugin({...})'), ' 调用。除 id 外所有字段都可选。', state.desktop
+        ? '把 .js 放进 exe 旁边的 plugins 文件夹即自动加载；也可以在这里新建（保存在本机），或在数据目录中放 *.plugin.js。'
+        : '放进 plugins/ 并登记到 plugins/index.js 即随页面加载；也可以在这里新建（保存在浏览器本地），或在数据目录中放 *.plugin.js。'),
       h('table', { class: 'doc-table' }, h('thead', null, h('tr', null, h('th', null, '字段'), h('th', null, '说明'))),
         h('tbody', null, API_DOC_ROWS.map(([k, v]) => h('tr', null, h('td', null, h('code', null, k)), h('td', null, v))))),
       h('p', { class: 'muted' }, '钩子参数 ', h('code', null, 't'), ' 是数据表：', h('code', null, 't.col(name)'), ' 取列（数值列为 Float64Array，缺失为 NaN）、', h('code', null, 't.map([a, b], fn)'), ' 逐行计算、', h('code', null, 't.stats(name)'), '、', h('code', null, 't.find([别名…])'), '；', h('code', null, 'ctx.utils'), ' 提供 mean / std / rms / median / diff / movingAverage / ema / corr / linreg / duration / timeColumn 等。'),
@@ -3582,9 +3659,10 @@ function boot() {
   bindDnD();
   renderSidebar();
   renderMain();
-  if (!window.echarts) toast('ECharts 未能加载（vendor/echarts.min.js 缺失且无法访问 CDN），图表不可用', 'error', { sticky: true });
-  // plugins/ 下的内置插件在 load 之前注册完毕，之后再加载本地（用户）插件，使其可以覆盖同 id 的内置插件
-  window.addEventListener('load', loadUserPlugins);
+  if (!window.echarts) toast('ECharts 未能加载（lib/echarts.min.js 缺失且无法访问 CDN），图表不可用', 'error', { sticky: true });
+  // 加载顺序：内置插件 → 桌面版插件文件夹 → 本地（用户）插件；后注册的同 id 插件覆盖先注册的
+  const desktopReady = detectDesktop().catch(() => {});
+  window.addEventListener('load', () => { desktopReady.then(loadUserPlugins); });
 }
 
 window.CSVViewer = {

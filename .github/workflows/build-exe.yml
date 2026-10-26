@@ -1,0 +1,30 @@
+name: Build Windows exe
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: |
+          go vet ./...
+          GOOS=windows GOARCH=amd64 go vet ./...
+      - name: Build
+        run: sh scripts/build-exe.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CSVLens-windows-amd64
+          path: dist/CSVLens.exe

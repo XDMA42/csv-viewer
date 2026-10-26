@@ -3,7 +3,10 @@
 一个**纯前端、单页面**的 CSV 分析工具：选择一个根目录，递归扫描其中（含所有子文件夹）的全部 `.csv / .tsv`，按表结构分组、统计列分布；
 通过**插件**识别特定种类的 CSV，自动计算衍生特征、指标并绘制专属子图，还能对同类文件批量汇总、跨文件对比。
 
-数据只在本地浏览器中处理，不会上传。不需要安装、不需要服务器，双击 `index.html` 即可使用。
+数据只在本机处理，不会上传。两种用法功能完全相同：
+
+- **网页版**：双击 `index.html`，不需要安装和服务器。
+- **Windows 桌面版**：一个 `CSVLens.exe`（约 8 MB），双击即打开独立窗口，内置全部插件和示例数据，见[下文](#windows-桌面版exe)。
 
 ![目录概览](docs/overview.png)
 ![测距插件](docs/ranging-plugin.png)
@@ -14,7 +17,32 @@
 2. 点「打开文件夹」选择根目录，或把文件夹直接拖进窗口。仓库自带 `samples/` 示例目录可以直接试用。
 3. 左侧是文件树（插件匹配的文件带彩色圆点），点目录看概览，点文件看分析。
 
-> 离线可用：ECharts 已放在 `vendor/` 中；若该文件缺失，会自动改用 CDN。
+> 离线可用：ECharts 已放在 `lib/` 中；若该文件缺失，会自动改用 CDN。
+
+## Windows 桌面版（exe）
+
+`CSVLens.exe` 把整个网页版（页面、内置插件、ECharts、示例数据）打包成一个文件，用系统自带的 WebView2（Edge 内核）显示在独立窗口中。
+
+- **运行**：双击 `CSVLens.exe`。Windows 10 / 11 一般已自带 WebView2；若没有，程序会自动改用默认浏览器打开（关闭页面几分钟后程序自动退出）。
+  首次运行未签名的 exe 时，SmartScreen 可能提示「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」。
+- **示例数据**：欢迎页点「加载示例数据」即可试用。
+- **插件文件夹**：exe 同目录下的 `plugins\` 中的 `.js` 会在启动时自动加载，不需要登记清单。
+  「插件」面板中点「打开文件夹」会创建该文件夹（附带插件模板 `_template.js`、内置插件源码副本 `_builtin\` 和说明），
+  修改插件后点「重新加载插件文件夹」即可生效。同 id 的插件会覆盖内置版本。
+- **本地数据**：设置、在页面中编写的插件保存在 `%LOCALAPPDATA%\CSVLens`。
+- **命令行参数**：`-browser` 强制用浏览器打开 · `-debug` 启用右键菜单和开发者工具（F12，调试插件时有用） · `-port N` 指定本地端口（默认 47821）。
+
+程序只在 `127.0.0.1` 上提供服务，拒绝其他主机名的请求，不会对外开放端口。
+
+**自己构建**（需要 Go 1.24+，任何系统都能交叉编译出 Windows 版）：
+
+```sh
+sh scripts/build-exe.sh        # Linux / macOS / Git Bash → dist/CSVLens.exe
+scripts\build-exe.bat          # Windows 命令行
+```
+
+仓库的 GitHub Actions（`.github/workflows/build-exe.yml`）也会自动构建，在 Actions 页面下载 `CSVLens-windows-amd64`。
+修改图标：编辑 `cmd/csvlens/winres/icon.svg`，运行 `node cmd/csvlens/winres/render_icon.js` 和 `python3 cmd/csvlens/winres/make_syso.py`。
 
 ## 功能
 
@@ -161,8 +189,12 @@ plugins/
   generic-stats.js      通用统计（兜底）
   _template.js          插件模板（带完整注释，不会自动加载）
 samples/                示例数据（generate_samples.py 可重新生成）
-vendor/echarts.min.js   ECharts 5.6.0（Apache-2.0）
+lib/echarts.min.js      ECharts 5.6.0（Apache-2.0）
 docs/                   截图
+assets.go               桌面版：把上面的网页资源嵌入 exe
+cmd/csvlens/            桌面版程序（Go）：本地服务 + WebView2 窗口
+  winres/               图标源文件与资源生成脚本
+scripts/build-exe.*     构建 dist/CSVLens.exe
 ```
 
 ## 说明
