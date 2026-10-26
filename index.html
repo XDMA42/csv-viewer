@@ -12,6 +12,9 @@
     try { t = localStorage.getItem('csvlens.theme'); } catch (e) { /* storage blocked */ }
     if (t !== 'light' && t !== 'dark') t = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     document.documentElement.setAttribute('data-theme', t);
+    var w = null;
+    try { w = parseInt(localStorage.getItem('csvlens.sidebarW'), 10); } catch (e) { /* storage blocked */ }
+    if (w > 0) document.documentElement.style.setProperty('--sidebar-w', w + 'px');
   })();
 </script>
 <style>
@@ -86,7 +89,8 @@ a { color: var(--accent-ink); }
 /* ---------- layout ---------- */
 .app {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
+  /* 侧栏宽度可拖动调整；窗口变窄时最多占 60% */
+  grid-template-columns: min(var(--sidebar-w, 300px), 60vw) minmax(0, 1fr);
   grid-template-rows: 56px minmax(0, 1fr);
   height: 100vh;
 }
@@ -118,10 +122,23 @@ a { color: var(--accent-ink); }
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
 
 .sidebar {
+  position: relative;
   background: var(--surface);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column; min-height: 0;
 }
+.sidebar-resizer {
+  position: absolute; top: 0; bottom: 0; right: -4px; width: 8px; z-index: 6;
+  cursor: col-resize; touch-action: none;
+}
+.sidebar-resizer::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px;
+  background: transparent; transition: background-color 0.15s;
+}
+.sidebar-resizer:hover::after, .sidebar-resizer:focus-visible::after, body.resizing .sidebar-resizer::after { background: var(--accent); }
+.sidebar-resizer:focus-visible { outline: none; }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing .main { pointer-events: none; }
 .main { overflow: auto; min-width: 0; position: relative; }
 .page { max-width: 1480px; margin: 0 auto; padding: 24px 28px 72px; }
 
@@ -221,6 +238,10 @@ select.input { padding-right: 4px; max-width: 240px; }
 .tree-row.active { background: var(--accent-soft); color: var(--text); }
 .tree-row.active::before { content: ''; position: absolute; left: 1px; top: 7px; bottom: 7px; width: 3px; border-radius: 3px; background: var(--accent); }
 .tree-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 文件名中间省略：保留结尾（编号、时间戳、扩展名常在末尾），空间够时完整显示 */
+.tree-row .name.mid { display: flex; }
+.tree-row .name.mid .h { flex: 0 1000 auto; min-width: 2.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-row .name.mid .t { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
 .tree-row .meta { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; flex: none; }
 .tree-row.folder { color: var(--text); font-weight: 560; }
 .tree-row.folder .ico.f { color: var(--muted); }
@@ -497,6 +518,7 @@ textarea.code-editor:focus { border-color: var(--accent); box-shadow: 0 0 0 3px 
     transform: translateX(-102%); transition: transform 0.2s; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
   }
   .sidebar.open { transform: none; }
+  .sidebar-resizer { display: none; }
   .only-mobile { display: inline-grid !important; }
   .brand-sub, .topbar-root, .hide-sm { display: none !important; }
   .topbar { gap: 8px; padding: 0 10px; }
@@ -535,6 +557,7 @@ textarea.code-editor:focus { border-color: var(--accent); box-shadow: 0 0 0 3px 
     </div>
     <div class="tree" id="tree"></div>
     <div class="sidebar-foot" id="compareBar" hidden></div>
+    <div class="sidebar-resizer" id="sidebarResizer" role="separator" aria-orientation="vertical" aria-label="调整文件列表宽度" tabindex="0" title="拖动调整宽度，双击恢复默认"></div>
   </aside>
   <main class="main" id="main"></main>
 </div>
@@ -2659,9 +2682,14 @@ function fileRow(e, depth) {
     onclick: (ev) => { ev.stopPropagation(); toggleSelect(e.id); },
   }),
   icon('file', 15, 'file'),
-  h('span', { class: 'name' }, e.name),
+  fileNameEl(e.name),
   dots,
   h('span', { class: 'meta' }, fmtBytes(e.size)));
+}
+function fileNameEl(name) {
+  const TAIL = 10;
+  if (name.length <= TAIL + 6) return h('span', { class: 'name' }, name);
+  return h('span', { class: 'name mid' }, h('span', { class: 'h' }, name.slice(0, -TAIL)), h('span', { class: 't' }, name.slice(-TAIL)));
 }
 function updateTreeActive() {
   const v = state.view;
@@ -3675,6 +3703,49 @@ function bindDnD() {
     handleDrop(ev.dataTransfer).catch((err) => toast('读取失败：' + err.message, 'error'));
   });
 }
+/* 侧栏宽度：拖动 / 方向键调整，双击恢复默认，宽度保存在本地 */
+const SIDEBAR_DEFAULT = 300, SIDEBAR_MIN = 200;
+function sidebarMax() { return Math.max(SIDEBAR_MIN, Math.min(720, Math.floor(window.innerWidth * 0.6))); }
+function setSidebarWidth(w, save) {
+  w = Math.round(Math.min(sidebarMax(), Math.max(SIDEBAR_MIN, w)));
+  document.documentElement.style.setProperty('--sidebar-w', w + 'px');
+  const r = $('#sidebarResizer');
+  r.setAttribute('aria-valuenow', String(w));
+  r.setAttribute('aria-valuemin', String(SIDEBAR_MIN));
+  r.setAttribute('aria-valuemax', String(sidebarMax()));
+  if (save) { try { localStorage.setItem('csvlens.sidebarW', String(w)); } catch (e) { /* storage blocked */ } }
+}
+function bindSidebarResizer() {
+  const r = $('#sidebarResizer'), sidebar = $('#sidebar');
+  const current = () => sidebar.getBoundingClientRect().width;
+  r.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    r.setPointerCapture(ev.pointerId);
+    const startX = ev.clientX, startW = current();
+    document.body.classList.add('resizing');
+    const move = (e) => setSidebarWidth(startW + e.clientX - startX, false);
+    const up = () => {
+      r.removeEventListener('pointermove', move);
+      r.removeEventListener('pointerup', up);
+      r.removeEventListener('pointercancel', up);
+      document.body.classList.remove('resizing');
+      setSidebarWidth(current(), true);
+    };
+    r.addEventListener('pointermove', move);
+    r.addEventListener('pointerup', up);
+    r.addEventListener('pointercancel', up);
+  });
+  r.addEventListener('dblclick', () => setSidebarWidth(SIDEBAR_DEFAULT, true));
+  r.addEventListener('keydown', (ev) => {
+    const step = ev.shiftKey ? 64 : 16;
+    if (ev.key === 'ArrowLeft') { ev.preventDefault(); setSidebarWidth(current() - step, true); }
+    else if (ev.key === 'ArrowRight') { ev.preventDefault(); setSidebarWidth(current() + step, true); }
+    else if (ev.key === 'Home') { ev.preventDefault(); setSidebarWidth(SIDEBAR_DEFAULT, true); }
+  });
+  setSidebarWidth(current(), false);
+}
+
 function boot() {
   Charts.init();
   $('#searchBox').prepend(icon('search', 15));
@@ -3702,6 +3773,7 @@ function boot() {
     else if (ev.key === '/') { ev.preventDefault(); $('#search').focus(); }
   });
   bindDnD();
+  bindSidebarResizer();
   renderSidebar();
   renderMain();
   if (!window.echarts) toast('ECharts 未能加载（lib/echarts.min.js 缺失且无法访问 CDN），图表不可用', 'error', { sticky: true });
