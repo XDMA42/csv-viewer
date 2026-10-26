@@ -31,7 +31,8 @@ CSVViewer.registerPlugin({
   version: '0.1.0',
   description: '一句话说明插件做什么。',
   priority: 0,                    // 多个插件匹配同一文件时，数值大的排在前面
-  fallback: false,                // true = 兜底插件：只在没有其他非兜底插件匹配时启用
+  fallback: false,                // true = 兜底插件：只在没有专用插件匹配时启用
+  general: false,                 // true = 通用插件：总是与其他插件一起显示，且不会让兜底插件让位
   collapsed: false,               // 插件卡片默认是否折叠
 
   /* ---------- 匹配：决定哪些 CSV 适用此插件（只读表头，速度很快） ---------- */

@@ -1367,6 +1367,7 @@ function registerPlugin(def) {
     description: def.description ? String(def.description) : '',
     priority: Number(def.priority) || 0,
     fallback: !!def.fallback,
+    general: !!def.general,
     features: Array.isArray(def.features) ? def.features.filter(Boolean) : [],
     params: Array.isArray(def.params) ? def.params.filter((d) => d && d.key) : [],
     _match: compileMatcher(def.match),
@@ -2122,9 +2123,10 @@ function computeMatches() {
       try { return !!p._match(info); }
       catch (err) { console.warn('[CSV Lens] 插件 ' + p.id + ' 的 match() 出错：', err); return false; }
     }).map((p) => p.id);
+    // 专用插件（既非兜底也非通用）匹配时，兜底插件让位；通用插件总是一起显示
     const active = e.matchAll.filter((id) => Plugins.isEnabled(id)).map((id) => Plugins.byId.get(id));
-    const primary = active.filter((p) => !p.fallback);
-    e.matches = (primary.length ? primary : active).map((p) => p.id);
+    const dedicated = active.some((p) => !p.fallback && !p.general);
+    e.matches = active.filter((p) => !p.fallback || !dedicated).map((p) => p.id);
   }
 }
 function pluginsFor(e) { return (e.matches || []).map((id) => Plugins.byId.get(id)).filter(Boolean); }
@@ -2142,7 +2144,7 @@ function pluginCoverage(p, files) {
     eligible++;
     if ((e.matches || []).includes(p.id)) { active++; continue; }
     if (!Plugins.isEnabled(p.id)) continue;
-    for (const q of pluginsFor(e)) if (!q.fallback) takenBy.set(q.name, (takenBy.get(q.name) || 0) + 1);
+    for (const q of pluginsFor(e)) if (!q.fallback && !q.general) takenBy.set(q.name, (takenBy.get(q.name) || 0) + 1);
   }
   return { active, eligible, takenBy };
 }
@@ -2153,7 +2155,8 @@ function coverageNote(p, c) {
   const names = [...c.takenBy.keys()].map((n) => '「' + n + '」').join('、');
   return '另有 ' + taken + ' 个符合条件的文件由' + names + '处理（兜底插件只用于没有专用插件匹配的文件）';
 }
-const FALLBACK_TIP = '兜底插件：只用于没有其他（非兜底）插件匹配的文件；在「插件」面板停用专用插件后，兜底插件会接手这些文件';
+const FALLBACK_TIP = '兜底插件：只用于没有专用插件匹配的文件；在「插件」面板停用专用插件后，兜底插件会接手这些文件';
+const GENERAL_TIP = '通用插件：匹配时总是显示，可与专用插件同时出现，也不会让兜底插件让位';
 
 let pluginsChangedTimer = 0;
 function schedulePluginsChanged() {
@@ -2813,7 +2816,7 @@ function renderWelcome(main) {
         Plugins.list.length
           ? h('div', { class: 'plist' }, Plugins.sorted().map((p) => h('div', { class: 'prow' },
               h('span', { class: 'picon', style: { '--c': pluginColor(p) } }, icon('plug', 15)),
-              h('div', { class: 'grow' }, h('div', { class: 'pname' }, p.name, p.fallback ? h('span', { class: 'muted small' }, '  兜底') : null), h('div', { class: 'pdesc' }, matchSummary(p))))))
+              h('div', { class: 'grow' }, h('div', { class: 'pname' }, p.name, p.fallback ? h('span', { class: 'muted small' }, '  兜底') : null, p.general ? h('span', { class: 'muted small' }, '  通用') : null), h('div', { class: 'pdesc' }, matchSummary(p))))))
           : h('div', { class: 'card-body muted' }, '暂无插件。'))),
     h('p', { class: 'muted small', style: { marginTop: '18px' } }, '快捷键：', h('span', { class: 'kbd' }, 'J'), ' / ', h('span', { class: 'kbd' }, 'K'), ' 下一个 / 上一个文件，', h('span', { class: 'kbd' }, '/'), ' 搜索。'));
 }
@@ -2892,7 +2895,7 @@ function pluginOverviewCard(files, scope) {
     list.append(h('div', { class: 'prow', style: enabled ? null : { opacity: 0.55 } },
       h('span', { class: 'picon', style: { '--c': pluginColor(p) } }, icon('plug', 15)),
       h('div', { class: 'grow' },
-        h('div', { class: 'pname' }, p.name, p.fallback ? h('span', { class: 'muted small', title: FALLBACK_TIP }, '  兜底') : null, enabled ? null : h('span', { class: 'muted small' }, '  已停用')),
+        h('div', { class: 'pname' }, p.name, p.fallback ? h('span', { class: 'muted small', title: FALLBACK_TIP }, '  兜底') : null, p.general ? h('span', { class: 'muted small', title: GENERAL_TIP }, '  通用') : null, enabled ? null : h('span', { class: 'muted small' }, '  已停用')),
         h('div', { class: 'pdesc' }, p.description || matchSummary(p)),
         note ? h('div', { class: 'pdesc', style: { marginTop: '2px' } }, icon('info', 12), ' ', note) : null),
       h('span', { class: 'pcount' }, state.scanning ? '…' : '匹配 ' + n + ' 个文件'),
@@ -3526,7 +3529,7 @@ ${ys.map((y) => '    { title: ' + J(y + ' vs ' + (x || '行号')) + ", type: 'li
 const API_DOC_ROWS = [
   ['id / name / version / description', '基本信息；id 唯一，同 id 重新注册会覆盖（热更新）'],
   ['match', '匹配规则：{ columns, anyColumns, numericColumns, path, test } 或函数 (info) => boolean。列名不区分大小写，columns 里的数组表示别名'],
-  ['priority / fallback', '排序优先级；fallback: true 为兜底插件，只在没有其他插件匹配时启用'],
+  ['priority / fallback / general', '排序优先级；fallback: true 为兜底插件，只在没有专用插件匹配时启用；general: true 为通用插件，总是与其他插件一起显示，且不会让兜底插件让位'],
   ['params', '可调参数 [{ key, label, type: number | select | checkbox | text, default, options }]，在 ctx.params 中读取'],
   ['features', '衍生特征 [{ name, label, description, requires, compute(t, ctx) → 等长数组 }]，新列可用于绘图、导出；requires 中的列缺失时自动跳过'],
   ['metrics(t, ctx)', '返回指标卡片 [{ label, value, unit, digits, hint }]'],
@@ -3576,7 +3579,7 @@ function openPluginManager(initialTab) {
       body.append(h('div', { class: 'pm-row' },
         h('span', { class: 'picon', style: { '--c': pluginColor(p) } }, icon('plug', 16)),
         h('div', { class: 'grow' },
-          h('div', { class: 'pm-name' }, p.name, p.version ? h('span', { class: 'muted small' }, 'v' + p.version) : null, h('span', { class: 'tag' }, origin), p.fallback ? h('span', { class: 'tag', title: FALLBACK_TIP }, '兜底') : null, h('span', { class: 'muted small mono' }, p.id)),
+          h('div', { class: 'pm-name' }, p.name, p.version ? h('span', { class: 'muted small' }, 'v' + p.version) : null, h('span', { class: 'tag' }, origin), p.fallback ? h('span', { class: 'tag', title: FALLBACK_TIP }, '兜底') : null, p.general ? h('span', { class: 'tag', title: GENERAL_TIP }, '通用') : null, h('span', { class: 'muted small mono' }, p.id)),
           p.description ? h('div', { class: 'pm-desc' }, p.description) : null,
           h('div', { class: 'pm-meta' }, matchSummary(p), state.entries.length ? ' · 当前目录匹配 ' + cov.active + ' 个文件' : '', hooks ? ' · ' + hooks : ''),
           state.entries.length && note ? h('div', { class: 'pm-meta' }, icon('info', 12), ' ', note) : null,

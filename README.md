@@ -111,7 +111,7 @@ CSVViewer.registerPlugin({
 
 完整版本（`plugins/ranging.js`）还包含两路平滑残差、RSSI 差、采样间隔、离群点、可调参数、rssi vs dis 散点、残差分布和跨文件汇总图，同样都按列是否存在自动取舍。
 如果你的文件列名不同，改 `match` 和各处列名即可。`match` 里可以写别名数组（如 `['dis_sm', 'dissm']`），在 `charts(t)` 里用 `t.find(['dis_sm', 'dissm'])` 取得实际列名。
-仓库另外自带两个**兜底插件**：`timeseries.js`（任意带时间列的 CSV：每个数值列随时间的曲线）和 `generic-stats.js`（相关系数矩阵、分布直方图）。
+仓库另外自带两个通用分析插件：`timeseries.js`（**兜底插件**，任意带时间列的 CSV：每个数值列随时间的曲线，有专用插件时自动让位）和 `generic-stats.js`（**通用插件**，相关系数矩阵、分布直方图，与其他插件一起显示）。
 写新插件可从 `plugins/_template.js` 开始，里面注释了所有字段。
 
 ### 插件 API
@@ -120,7 +120,9 @@ CSVViewer.registerPlugin({
 CSVViewer.registerPlugin({
   id, name, version, description,   // id 必填且唯一
   priority: 0,                      // 多个插件匹配同一文件时，大的排前面
-  fallback: false,                  // true = 兜底插件：只在没有其他（非兜底）插件匹配时启用
+  fallback: false,                  // true = 兜底插件：只在没有专用插件匹配时启用
+  general: false,                   // true = 通用插件：总是与其他插件一起显示，且不会让兜底插件让位
+                                    // 两者都为 false 即专用插件（如测距分析）：匹配时兜底插件让位
   collapsed: false,                 // 卡片默认是否折叠
   match,                            // 匹配规则（见下）
   params: [],                       // 可调参数（见下）
@@ -198,7 +200,7 @@ plugins/
   index.js              插件清单：列出随页面加载的插件
   ranging.js            测距分析（ts / dis / dis_sm / dis_main / dis_main_sm / rssi_init / rssi_refl）
   timeseries.js         时间序列（兜底）
-  generic-stats.js      通用统计（兜底）
+  generic-stats.js      通用统计（通用插件）
   _template.js          插件模板（带完整注释，不会自动加载）
 samples/                示例数据（generate_samples.py 可重新生成）
 lib/echarts.min.js      ECharts 5.6.0（Apache-2.0）
