@@ -2128,6 +2128,32 @@ function computeMatches() {
   }
 }
 function pluginsFor(e) { return (e.matches || []).map((id) => Plugins.byId.get(id)).filter(Boolean); }
+/**
+ * 插件在一组文件上的覆盖情况：
+ *   active   实际作用的文件数
+ *   eligible 符合匹配条件的文件数（不论是否启用 / 是否被接管）
+ *   takenBy  兜底插件被专用插件接管的文件数，按专用插件名统计
+ */
+function pluginCoverage(p, files) {
+  let active = 0, eligible = 0;
+  const takenBy = new Map();
+  for (const e of files) {
+    if (!(e.matchAll || []).includes(p.id)) continue;
+    eligible++;
+    if ((e.matches || []).includes(p.id)) { active++; continue; }
+    if (!Plugins.isEnabled(p.id)) continue;
+    for (const q of pluginsFor(e)) if (!q.fallback) takenBy.set(q.name, (takenBy.get(q.name) || 0) + 1);
+  }
+  return { active, eligible, takenBy };
+}
+function coverageNote(p, c) {
+  if (!Plugins.isEnabled(p.id)) return c.eligible ? '已停用，启用后可匹配 ' + c.eligible + ' 个文件' : '';
+  const taken = c.eligible - c.active;
+  if (!taken) return '';
+  const names = [...c.takenBy.keys()].map((n) => '「' + n + '」').join('、');
+  return '另有 ' + taken + ' 个符合条件的文件由' + names + '处理（兜底插件只用于没有专用插件匹配的文件）';
+}
+const FALLBACK_TIP = '兜底插件：只用于没有其他（非兜底）插件匹配的文件；在「插件」面板停用专用插件后，兜底插件会接手这些文件';
 
 let pluginsChangedTimer = 0;
 function schedulePluginsChanged() {
@@ -2859,13 +2885,16 @@ function pluginOverviewCard(files, scope) {
   if (!plugins.length) list.append(h('div', { class: 'card-body muted' }, '暂无插件。'));
   for (const p of plugins) {
     const enabled = Plugins.isEnabled(p.id);
-    const n = files.filter((e) => (e.matches || []).includes(p.id)).length;
+    const cov = pluginCoverage(p, files);
+    const n = cov.active;
+    const note = state.scanning ? '' : coverageNote(p, cov);
     const job = state.batches.get(p.id + '|' + scope);
     list.append(h('div', { class: 'prow', style: enabled ? null : { opacity: 0.55 } },
       h('span', { class: 'picon', style: { '--c': pluginColor(p) } }, icon('plug', 15)),
       h('div', { class: 'grow' },
-        h('div', { class: 'pname' }, p.name, p.fallback ? h('span', { class: 'muted small' }, '  兜底') : null, enabled ? null : h('span', { class: 'muted small' }, '  已停用')),
-        h('div', { class: 'pdesc' }, p.description || matchSummary(p))),
+        h('div', { class: 'pname' }, p.name, p.fallback ? h('span', { class: 'muted small', title: FALLBACK_TIP }, '  兜底') : null, enabled ? null : h('span', { class: 'muted small' }, '  已停用')),
+        h('div', { class: 'pdesc' }, p.description || matchSummary(p)),
+        note ? h('div', { class: 'pdesc', style: { marginTop: '2px' } }, icon('info', 12), ' ', note) : null),
       h('span', { class: 'pcount' }, state.scanning ? '…' : '匹配 ' + n + ' 个文件'),
       n && enabled ? h('button', { class: 'btn sm ghost', onclick: () => { state.filter = p.id; renderFilterChips(); renderTree(); $('#sidebar').classList.add('open'); } }, '筛选') : null,
       n && enabled && typeof p.summarize === 'function'
@@ -3532,8 +3561,8 @@ function openPluginManager(initialTab) {
     if (!Plugins.list.length) body.append(emptyState('plug', '还没有插件', '在 plugins/index.js 中登记插件文件，或在这里导入 / 新建。'));
     const records = userPluginRecords();
     for (const p of Plugins.sorted()) {
-      const n = state.entries.filter((e) => (e.matches || []).includes(p.id)).length;
-      const nAll = state.entries.filter((e) => (e.matchAll || []).includes(p.id)).length;
+      const cov = pluginCoverage(p, state.entries);
+      const note = coverageNote(p, cov);
       const rec = p._origin === 'user' ? records.find((r) => r.key === p._key) : null;
       const origin = { file: '内置', user: '本地', folder: '数据目录', ext: '插件文件夹', runtime: '运行时' }[p._origin] || p._origin;
       const hooks = [
@@ -3547,9 +3576,10 @@ function openPluginManager(initialTab) {
       body.append(h('div', { class: 'pm-row' },
         h('span', { class: 'picon', style: { '--c': pluginColor(p) } }, icon('plug', 16)),
         h('div', { class: 'grow' },
-          h('div', { class: 'pm-name' }, p.name, p.version ? h('span', { class: 'muted small' }, 'v' + p.version) : null, h('span', { class: 'tag' }, origin), p.fallback ? h('span', { class: 'tag' }, '兜底') : null, h('span', { class: 'muted small mono' }, p.id)),
+          h('div', { class: 'pm-name' }, p.name, p.version ? h('span', { class: 'muted small' }, 'v' + p.version) : null, h('span', { class: 'tag' }, origin), p.fallback ? h('span', { class: 'tag', title: FALLBACK_TIP }, '兜底') : null, h('span', { class: 'muted small mono' }, p.id)),
           p.description ? h('div', { class: 'pm-desc' }, p.description) : null,
-          h('div', { class: 'pm-meta' }, matchSummary(p), state.entries.length ? ' · 当前目录匹配 ' + n + ' 个文件' + (nAll !== n ? '（' + nAll + ' 个符合条件）' : '') : '', hooks ? ' · ' + hooks : ''),
+          h('div', { class: 'pm-meta' }, matchSummary(p), state.entries.length ? ' · 当前目录匹配 ' + cov.active + ' 个文件' : '', hooks ? ' · ' + hooks : ''),
+          state.entries.length && note ? h('div', { class: 'pm-meta' }, icon('info', 12), ' ', note) : null,
           p._src ? h('div', { class: 'pm-meta mono' }, pluginSourceLabel(p)) : null),
         h('div', { class: 'pm-ctrl' },
           rec ? h('button', { class: 'icon-btn sm', title: '编辑', 'aria-label': '编辑', onclick: () => openPluginEditor(rec) }, icon('edit', 15)) : null,
