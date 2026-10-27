@@ -22,9 +22,22 @@ jobs:
         run: |
           go vet ./...
           GOOS=windows GOARCH=amd64 go vet ./...
+      - name: Check plugins
+        run: |
+          node scripts/build-skill.cjs --check
+          CSVS=$(find samples -name '*.csv' | sort)
+          for p in plugins/ranging.js plugins/timeseries.js plugins/generic-stats.js plugins/_template.js; do
+            node .claude/skills/csv-lens-plugin/scripts/check_plugin.cjs "$p" $CSVS
+          done
       - name: Build
-        run: sh scripts/build-exe.sh
+        run: |
+          sh scripts/build-exe.sh
+          node scripts/build-skill.cjs --zip
       - uses: actions/upload-artifact@v4
         with:
           name: CSVLens-windows-amd64
           path: dist/CSVLens.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: csv-lens-plugin-skill
+          path: dist/csv-lens-plugin.zip

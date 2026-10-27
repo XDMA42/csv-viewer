@@ -114,6 +114,26 @@ CSVViewer.registerPlugin({
 仓库另外自带两个通用分析插件：`timeseries.js`（**兜底插件**，任意带时间列的 CSV：每个数值列随时间的曲线，有专用插件时自动让位）和 `generic-stats.js`（**通用插件**，相关系数矩阵、分布直方图，与其他插件一起显示）。
 写新插件可从 `plugins/_template.js` 开始，里面注释了所有字段。
 
+### 用 AI 写插件
+
+**提示词**：「插件」面板 →「AI 提示词」。写下需求、选一个 CSV（可附带列信息和前 5 行数据），
+页面会生成一份完整的提示词（需求 + 数据 + 输出要求 + 完整 API 参考 + 示例插件），复制给 Claude、ChatGPT 等 AI 助手；
+把它返回的代码粘贴到「粘贴 AI 生成的代码」中保存即可。没有插件匹配的文件页上也有「用 AI 写插件」入口。
+
+**Claude Skill**：`.claude/skills/csv-lens-plugin/` 是一个现成的 skill，Claude 会按它的流程了解数据、写插件，
+并用自带的**检查器**在真实 CSV 上验证（列名写错、y 不是数值列、特征长度不对等问题都会被发现）。
+
+- Claude Code：在本仓库中工作时自动可用；其他项目里使用，把该文件夹复制到 `~/.claude/skills/`。
+- Claude 应用：运行 `node scripts/build-skill.cjs --zip` 生成 `dist/csv-lens-plugin.zip`（也可从 GitHub Actions 的构建产物下载），在设置的 Skills 中上传。
+
+检查器也可以单独使用（需要 Node.js 16+）：
+
+```sh
+node .claude/skills/csv-lens-plugin/scripts/check_plugin.cjs plugins/my-plugin.js data/a.csv data/b.csv
+```
+
+API 参考的源文件是 `.claude/skills/csv-lens-plugin/reference.md`；修改它或 `plugins/ranging.js`（提示词中的示例）后，运行 `node scripts/build-skill.cjs` 更新页面使用的 `lib/plugin-guide.js`。
+
 ### 插件 API
 
 ```js
@@ -195,7 +215,7 @@ match: {
 ## 目录结构
 
 ```
-index.html              主程序（HTML + CSS + JS，单文件）
+index.html              主程序（界面）
 plugins/
   index.js              插件清单：列出随页面加载的插件
   ranging.js            测距分析（ts / dis / dis_sm / dis_main / dis_main_sm / rssi_init / rssi_refl）
@@ -203,12 +223,16 @@ plugins/
   generic-stats.js      通用统计（通用插件）
   _template.js          插件模板（带完整注释，不会自动加载）
 samples/                示例数据（generate_samples.py 可重新生成）
+lib/core.js             不依赖 DOM 的核心：CSV 解析、数据表、工具函数、图表 spec 转换（页面与插件检查器共用）
+lib/plugin-guide.js     插件 API 参考与示例（由 scripts/build-skill.cjs 生成，「AI 提示词」使用）
 lib/echarts.min.js      ECharts 5.6.0（Apache-2.0）
 docs/                   截图
 assets.go               桌面版：把上面的网页资源嵌入 exe
 cmd/csvlens/            桌面版程序（Go）：本地服务 + WebView2 窗口
   winres/               图标源文件与资源生成脚本
 scripts/build-exe.*     构建 dist/CSVLens.exe
+scripts/build-skill.cjs 生成 lib/plugin-guide.js 与 dist/csv-lens-plugin.zip
+.claude/skills/csv-lens-plugin/   编写插件的 Claude skill（SKILL.md、API 参考、检查器）
 ```
 
 ## 说明
